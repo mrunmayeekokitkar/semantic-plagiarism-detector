@@ -218,3 +218,37 @@ def load_index(path: str) -> faiss.Index:
     index = faiss.read_index(path)
     print(f"[faiss_index] Index loaded ← {path}  ({index.ntotal} vectors)")
     return index
+
+
+def build_index_from_matrix(
+    matrix: np.ndarray,
+    index_type: str = "auto",
+    nlist: Optional[int] = None,
+    nprobe: int = 10,
+) -> faiss.Index:
+    """Build a FAISS index from a pre-computed 2D numpy matrix of embeddings."""
+    dim = 384
+    if matrix.size == 0 or matrix.shape[0] == 0:
+        return faiss.IndexFlatIP(dim)
+
+    n_vectors = matrix.shape[0]
+
+    # Resolve index type
+    if index_type == "auto":
+        index_type = "ivf" if n_vectors >= _IVF_THRESHOLD else "flat"
+
+    if index_type == "ivf":
+        if nlist is None:
+            nlist = max(4, int(np.sqrt(n_vectors)))
+        nlist = min(nlist, n_vectors)
+
+        quantizer = faiss.IndexFlatIP(dim)
+        index = faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_INNER_PRODUCT)
+        index.train(matrix.astype("float32"))
+        index.add(matrix.astype("float32"))
+        index.nprobe = nprobe
+    else:
+        index = faiss.IndexFlatIP(dim)
+        index.add(matrix.astype("float32"))
+
+    return index
