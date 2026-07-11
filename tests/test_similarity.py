@@ -54,6 +54,12 @@ def test_document_similarity_matrix(dummy_embeddings):
     assert isinstance(df, pd.DataFrame)
     assert df.shape == (3, 3)
     assert list(df.columns) == ["doc_A", "doc_B", "doc_C"]
+
+
+def test_document_similarity_matrix_accepts_batch_size_basic(dummy_embeddings):
+    df = document_similarity_matrix(dummy_embeddings, batch_size=2)
+    assert isinstance(df, pd.DataFrame)
+    assert np.isclose(df.loc["doc_A", "doc_A"], 1.0)
     
     # Diagonal should be ~1.0
     assert np.isclose(df.loc["doc_A", "doc_A"], 1.0)
@@ -74,6 +80,12 @@ def test_chunk_similarity_matrix(dummy_embeddings):
     
     assert isinstance(df, pd.DataFrame)
     assert df.shape == (3, 3)
+
+
+def test_chunk_similarity_matrix_accepts_batch_size_basic(dummy_embeddings):
+    df = chunk_similarity_matrix(dummy_embeddings, batch_size=1)
+    assert isinstance(df, pd.DataFrame)
+    assert df.loc["doc_A", "doc_A"] == 1.0
     
     # Diagonal should be 1.0
     assert df.loc["doc_A", "doc_A"] == 1.0
