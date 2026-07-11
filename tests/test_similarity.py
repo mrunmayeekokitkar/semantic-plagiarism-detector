@@ -48,6 +48,11 @@ def test_chunk_max_similarity_supports_batching(dummy_embeddings):
     assert np.isclose(sim_batched, sim_unbatched)
 
 
+def test_chunk_max_similarity_rejects_invalid_batch_size(dummy_embeddings):
+    with pytest.raises(ValueError, match="batch_size must be a positive integer"):
+        chunk_max_similarity(dummy_embeddings["doc_A"], dummy_embeddings["doc_B"], batch_size=0.5)
+
+
 def test_document_similarity_matrix(dummy_embeddings):
     df = document_similarity_matrix(dummy_embeddings)
     
@@ -66,6 +71,11 @@ def test_document_similarity_matrix_accepts_batch_size(dummy_embeddings):
     
     # A and B should be more similar to each other than A and C
     assert df.loc["doc_A", "doc_B"] > df.loc["doc_A", "doc_C"]
+
+
+def test_document_similarity_matrix_rejects_invalid_batch_size(dummy_embeddings):
+    with pytest.raises(ValueError, match="batch_size must be a positive integer"):
+        document_similarity_matrix(dummy_embeddings, batch_size=0.5)
 
 def test_chunk_similarity_matrix(dummy_embeddings):
     df = chunk_similarity_matrix(dummy_embeddings)

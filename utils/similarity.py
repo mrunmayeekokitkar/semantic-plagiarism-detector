@@ -60,11 +60,18 @@ def document_similarity_matrix(
     matrix = np.zeros((n, n))
     if doc_vectors:
         stacked = np.vstack(doc_vectors)  # (N, 384)
-        if batch_size is None or batch_size <= 0:
+        if batch_size is None:
             sim = cosine_similarity(stacked)  # (N, N)
             matrix = np.clip(sim, 0.0, 1.0)  # Numerical safety
         else:
-            batch_size = int(batch_size)
+            try:
+                batch_size = int(batch_size)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("batch_size must be a positive integer") from exc
+
+            if batch_size <= 0:
+                raise ValueError("batch_size must be a positive integer")
+
             for start in range(0, n, batch_size):
                 end = min(start + batch_size, n)
                 batch = stacked[start:end]
@@ -101,11 +108,18 @@ def chunk_max_similarity(
     if emb_a.size == 0 or emb_b.size == 0:
         return 0.0
 
-    if batch_size is None or batch_size <= 0:
+    if batch_size is None:
         sim_matrix = cosine_similarity(emb_a, emb_b)    # (Na, Nb)
         return float(np.max(sim_matrix))
 
-    batch_size = int(batch_size)
+    try:
+        batch_size = int(batch_size)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("batch_size must be a positive integer") from exc
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+
     max_score = 0.0
     for start_a in range(0, emb_a.shape[0], batch_size):
         end_a = min(start_a + batch_size, emb_a.shape[0])
