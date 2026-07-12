@@ -13,7 +13,7 @@ def _mock_encode(texts, batch_size=64, show_progress_bar=False, normalize_embedd
 def mock_model():
     model = MagicMock()
     model.encode.side_effect = _mock_encode
-    with patch("utils.embedding_model._get_model", return_value=model):
+    with patch("src.core.embedding_model._get_model", return_value=model):
         yield model
 
 
