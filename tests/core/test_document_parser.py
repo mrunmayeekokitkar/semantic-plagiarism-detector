@@ -48,7 +48,7 @@ def test_extract_from_pdf_filters_repeated_headers_page_numbers_and_whitespace()
     fake_pdf.__enter__.return_value = fake_pdf
     fake_pdf.__exit__.return_value = False
 
-    with patch("utils.document_parser.pdfplumber.open", return_value=fake_pdf):
+    with patch("src.core.document_parser.pdfplumber.open", return_value=fake_pdf):
         result = extract_text_from_pdf(io.BytesIO(b"fake-pdf"))
 
     assert "Research Report" not in result
@@ -96,7 +96,7 @@ def test_extract_texts_mixed():
     mock_file2.read.return_value = txt_bytes
 
     # Mock extract_text to isolate testing of extract_texts structure
-    with patch("utils.document_parser.extract_text", side_effect=lambda f, name: f"Parsed {name}"):
+    with patch("src.core.document_parser.extract_text", side_effect=lambda f, name: f"Parsed {name}"):
         results = extract_texts([mock_file1, mock_file2])
 
     assert results["doc1.docx"] == "Parsed doc1.docx"

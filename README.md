@@ -57,8 +57,8 @@ similarity, and **FAISS vector search**.
               └─────────────────────────────────────────────────────┘
                     │         │          │         │        │       │
               ┌─────▼──┐ ┌───▼────┐ ┌───▼────┐ ┌──▼────┐ ┌▼─────┐ ┌▼──────┐
-              │pdf_    │ │text_   │ │embed-  │ │faiss_ │ │simi- │ │heat-  │
-              │reader  │ │chunking│ │ding_   │ │index  │ │larity│ │map.py │
+              │document│ │text_   │ │embed-  │ │faiss_ │ │simi- │ │heat-  │
+              │_parser │ │chunking│ │ding_   │ │index  │ │larity│ │map.py │
               │.py     │ │.py     │ │model.py│ │.py    │ │.py   │ │       │
               └────────┘ └────────┘ └────────┘ └───────┘ └──────┘ └───────┘
 ```
@@ -67,13 +67,16 @@ similarity, and **FAISS vector search**.
 
 | Module | Responsibility |
 |---|---|
-| `utils/pdf_reader.py` | Extract raw text from PDFs via PyPDF2 |
-| `utils/text_chunking.py` | Split text into paragraph chunks (20–200 words) |
-| `utils/embedding_model.py` | Generate L2-normalised embeddings via SentenceTransformers |
-| `utils/faiss_index.py` | Build FAISS index (Flat/IVF); chunk-level search across all documents |
-| `utils/similarity.py` | Compute cosine similarity matrices; flag plagiarism |
-| `utils/heatmap.py` | Render Seaborn/Plotly heatmaps (document-level & chunk-level) |
-| `utils/auth.py` | SQLite-backed authentication with bcrypt password hashing |
+| `src/core/document_parser.py` | Extract raw text from PDF, DOCX, and TXT files |
+| `src/core/text_chunking.py` | Split text into paragraph chunks (20–200 words) |
+| `src/core/embedding_model.py` | Generate L2-normalised embeddings via SentenceTransformers |
+| `src/core/faiss_index.py` | Build FAISS index (Flat/IVF); chunk-level search across all documents |
+| `src/core/similarity.py` | Compute cosine similarity matrices; flag plagiarism |
+| `src/core/translator.py` | Translate non-English matching paragraphs to English |
+| `src/db/auth.py` | SQLite-backed authentication with bcrypt password hashing |
+| `src/db/corpus_db.py` | SQLite database manager for metadata, text chunks, and embedding vectors |
+| `src/visualization/heatmap.py` | Render Seaborn/Plotly heatmaps (document-level & chunk-level) |
+| `src/visualization/network_graph.py` | Render interactive Plotly plagiarism networks using spring layout |
 | `app/streamlit_app.py` | Streamlit UI: login, upload, warnings, FAISS search, heatmap, drill-down |
 
 ---
@@ -83,25 +86,44 @@ similarity, and **FAISS vector search**.
 ```
 semantic_plagiarism_detector/
 │
-├── utils/
-│   ├── __init__.py           # Package exports
-│   ├── auth.py               # SQLite auth (bcrypt hashing, role management)
-│   ├── pdf_reader.py         # PDF text extraction
-│   ├── text_chunking.py      # Paragraph-level chunking
-│   ├── embedding_model.py    # Sentence Transformer wrapper
-│   ├── faiss_index.py        # FAISS vector index (Flat / IVF)
-│   ├── similarity.py         # Cosine similarity & plagiarism flagging
-│   └── heatmap.py            # Matplotlib/Seaborn/Plotly visualisations
+├── src/                      # Source package containing all components
+│   ├── __init__.py           # Exports backward-compatible unified public API
+│   │
+│   ├── core/                 # Core NLP and mathematical algorithms
+│   │   ├── __init__.py
+│   │   ├── document_parser.py# PDF, Word, and Text parser
+│   │   ├── text_chunking.py  # Paragraph segmenter
+│   │   ├── embedding_model.py# Sentence Transformer model loader
+│   │   ├── faiss_index.py    # Vector search indexing (Flat / IVF)
+│   │   ├── similarity.py     # Cosine similarity calculations
+│   │   └── translator.py     # Translation helper
+│   │
+│   ├── db/                   # Database systems
+│   │   ├── __init__.py
+│   │   ├── auth.py           # SQLite login database
+│   │   └── corpus_db.py      # SQLite corpus document & vector database
+│   │
+│   └── visualization/        # Charting & visualizations
+│       ├── __init__.py
+│       ├── heatmap.py        # Cosine similarity heatmaps
+│       └── network_graph.py  # Plagiarism connection networks
 │
 ├── app/
-│   └── streamlit_app.py      # Main web dashboard (login + 5 tabs)
+│   └── streamlit_app.py      # Streamlit Entry Dashboard
+│
+├── tests/                    # Reorganized unit testing suite
+│   ├── conftest.py           # Testing configuration/stubs
+│   ├── core/                 # Unit tests for NLP and indexing
+│   ├── db/                   # Unit tests for databases
+│   └── visualization/        # Unit tests for plots
 │
 ├── users.db                  # SQLite user store (auto-created on first run)
+├── corpus.db                 # SQLite document store (auto-created on first run)
 │
 ├── evaluation/
-│   ├── benchmark_dataset.json  # 25 labelled text pairs
-│   ├── evaluate.py             # Precision/recall/F1 + ROC curves
-│   └── results/                # Generated plots & metrics (gitignored)
+│   ├── benchmark_dataset.json# 25 labelled text pairs
+│   ├── evaluate.py           # Precision/recall/F1 + ROC curves
+│   └── results/              # Generated plots & metrics (gitignored)
 │
 ├── .gitignore
 ├── requirements.txt
@@ -173,8 +195,8 @@ Additional users can be created from the **User Management** page (admin only).
 | FAISS matches per chunk | `5` | Nearest neighbours retrieved per chunk |
 | Chunk min words | `20` | Paragraphs shorter than this are discarded |
 | Chunk max words | `200` | Longer paragraphs are sub-split at sentence boundaries |
-| Embedding model | `paraphrase-multilingual-MiniLM-L12-v2` | Change in `utils/embedding_model.py` or set `SEMANTIC_PLAGIARISM_MODEL` |
-| Batch size | `64` | Tune for GPU/CPU in `embedding_model.py` |
+| Embedding model | `paraphrase-multilingual-MiniLM-L12-v2` | Change in `src/core/embedding_model.py` or set `SEMANTIC_PLAGIARISM_MODEL` |
+| Batch size | `64` | Tune for GPU/CPU in `src/core/embedding_model.py` |
 
 ---
 

@@ -30,10 +30,14 @@ pip install -r requirements.txt
 ## Contribution Guidelines
 
 - Keep code clean and readable.
-- Follow existing project structure.
-- Add comments where necessary.
-- Write meaningful commit messages.
-- Test your changes before submitting.
+- Follow the modular project structure:
+  - Core NLP algorithms, parsers, and indexing modules belong in [src/core/](file:///d:/B.E.%20in%20CE/BE/SEM%208/Mini%20Projects/NLP%20Mini%20Project/semantic_plagiarism_detector/src/core/).
+  - Database schema managers and user store helpers belong in [src/db/](file:///d:/B.E.%20in%20CE/BE/SEM%208/Mini%20Projects/NLP%20Mini%20Project/semantic_plagiarism_detector/src/db/).
+  - Plotting and graphical components belong in [src/visualization/](file:///d:/B.E.%20in%20CE/BE/SEM%208/Mini%20Projects/NLP%20Mini%20Project/semantic_plagiarism_detector/src/visualization/).
+  - Corresponding unit tests must be added to the matching subdirectory in `tests/` (e.g. `tests/core/`).
+- Add comments and inline docstrings where necessary.
+- Write meaningful, clear commit messages.
+- Test your changes locally before submitting.
 
 ---
 
