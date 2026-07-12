@@ -10,16 +10,22 @@ import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Any
 
-from utils.pdf_reader      import extract_text_from_pdf
-from utils.text_chunking   import chunk_documents
-from utils.embedding_model import embed_documents, _get_model_name
-from utils.similarity      import (
+from src.core.document_parser import extract_text
+from src.core.text_chunking   import chunk_documents, chunk_document
+from src.core.embedding_model import embed_documents, embed_chunks, _get_model_name
+from src.core.similarity      import (
     document_similarity_matrix, flag_plagiarism,
     find_most_similar_chunks, PLAGIARISM_THRESHOLD,
 )
-from utils.heatmap     import plot_similarity_heatmap, plot_similarity_heatmap_plotly, plot_chunk_similarity_comparison
-from utils.faiss_index import build_index, find_plagiarised_chunks, search_similar_chunks
-from utils.auth        import init_db, verify_user, get_user_role, get_all_users, add_user, delete_user, update_password
+from src.visualization.heatmap     import plot_similarity_heatmap, plot_similarity_heatmap_plotly, plot_chunk_similarity_comparison
+from src.core.faiss_index import build_index, find_plagiarised_chunks, search_similar_chunks, build_index_from_matrix
+from src.db.auth        import init_db, verify_user, get_user_role, get_all_users, add_user, delete_user, update_password
+from src.db.corpus_db   import (
+    init_corpus_db, add_document, get_document_by_hash, get_all_documents,
+    add_chunks, get_chunk_registry, get_all_embeddings, delete_document, clear_all_data
+)
+from src.visualization.network_graph import plot_similarity_network
+from src.core.translator import translate_text
 
 from app import theme
 
@@ -39,6 +45,24 @@ st.markdown("""
 <style>
     .block-container { padding-top: 2rem; }
     .stAlert { border-radius: 8px; }
+    
+    /* File uploader custom premium styling */
+    div[data-testid="stFileUploader"] {
+        border: 2px dashed #30363d !important;
+        background-color: #0d1117 !important;
+        border-radius: 15px !important;
+        padding: 24px !important;
+        transition: all 0.3s ease-in-out !important;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25) !important;
+    }
+    div[data-testid="stFileUploader"]:hover {
+        border-color: #388bfd !important;
+        background-color: #161b22 !important;
+        box-shadow: 0 8px 30px rgba(56, 139, 253, 0.15) !important;
+    }
+    div[data-testid="stFileUploader"] section {
+        background: transparent !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -119,6 +143,138 @@ if not st.session_state.get("authenticated"):
 
 _is_admin = st.session_state.get("role") == "admin"
 
+# Initialize persistent corpus DB
+init_corpus_db()
+
+# Load corpus into session state if not already done
+if "faiss_index" not in st.session_state or "registry" not in st.session_state:
+    embeddings_matrix = get_all_embeddings()
+    st.session_state["faiss_index"] = build_index_from_matrix(embeddings_matrix)
+    st.session_state["registry"] = get_chunk_registry()
+
+def compute_matrices_from_db():
+    import sqlite3
+    from src.db.corpus_db import _DB_PATH
+    
+    conn = sqlite3.connect(_DB_PATH)
+    rows = conn.execute("SELECT filename, embedding FROM chunks").fetchall()
+    conn.close()
+    
+    doc_embs = {}
+    for fname, emb_bytes in rows:
+        emb = np.frombuffer(emb_bytes, dtype=np.float32).reshape(-1, 384)
+        if fname not in doc_embs:
+            doc_embs[fname] = []
+        doc_embs[fname].append(emb)
+        
+    embeddings = {fname: np.vstack(embs) for fname, embs in doc_embs.items() if embs}
+    
+    if not embeddings:
+        return pd.DataFrame(), pd.DataFrame(), {}
+        
+    sim_df = document_similarity_matrix(embeddings)
+    
+    names = list(embeddings.keys())
+    n = len(names)
+    chunk_mat = np.zeros((n, n))
+    for i, na in enumerate(names):
+        for j, nb in enumerate(names):
+            if i == j:
+                chunk_mat[i, j] = 1.0
+            elif j > i:
+                ea, eb = embeddings[na], embeddings[nb]
+                score  = float(np.max(cosine_similarity(ea, eb))) if ea.size and eb.size else 0.0
+                chunk_mat[i, j] = chunk_mat[j, i] = score
+    chunk_sim_df = pd.DataFrame(chunk_mat, index=names, columns=names)
+    
+    return sim_df, chunk_sim_df, embeddings
+
+def get_all_raw_texts():
+    import sqlite3
+    from src.db.corpus_db import _DB_PATH
+    
+    conn = sqlite3.connect(_DB_PATH)
+    rows = conn.execute("SELECT filename, chunk_text FROM chunks ORDER BY filename, chunk_index").fetchall()
+    conn.close()
+    
+    raw_texts = {}
+    for fname, text in rows:
+        if fname not in raw_texts:
+            raw_texts[fname] = []
+        raw_texts[fname].append(text)
+        
+    return {fname: "\n\n".join(texts) for fname, texts in raw_texts.items()}
+
+def get_all_chunk_texts():
+    import sqlite3
+    from src.db.corpus_db import _DB_PATH
+    
+    conn = sqlite3.connect(_DB_PATH)
+    rows = conn.execute("SELECT filename, chunk_text FROM chunks ORDER BY filename, chunk_index").fetchall()
+    conn.close()
+    
+    chunked_docs = {}
+    for fname, text in rows:
+        if fname not in chunked_docs:
+            chunked_docs[fname] = []
+        chunked_docs[fname].append(text)
+    return chunked_docs
+
+def process_new_files(uploaded_files):
+    import hashlib
+    import faiss
+    
+    new_files_processed = 0
+    skipped_files = []
+    empty_docs = []
+    
+    with st.status("🧠 Processing documents...", expanded=True) as status:
+        for f in uploaded_files:
+            file_bytes = f.read()
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+            
+            existing_name = get_document_by_hash(file_hash)
+            if existing_name:
+                skipped_files.append(f"{f.name} (duplicate of {existing_name})")
+                continue
+                
+            status.write(f"📖 Extracting text from {f.name}...")
+            text = extract_text(_io.BytesIO(file_bytes), f.name)
+            if not text.strip():
+                empty_docs.append(f.name)
+                continue
+                
+            if not add_document(f.name, file_hash):
+                unique_name = f"{os.path.splitext(f.name)[0]}_{file_hash[:6]}{os.path.splitext(f.name)[1]}"
+                add_document(unique_name, file_hash)
+                doc_to_save = unique_name
+            else:
+                doc_to_save = f.name
+                
+            status.write(f"✂️ Chunking text into paragraphs for {doc_to_save}...")
+            chunks = chunk_document(text)
+            
+            status.write(f"🧬 Generating semantic embeddings for {doc_to_save}...")
+            embs = embed_chunks(chunks)
+            
+            if embs.ndim == 2 and embs.shape[0] > 0:
+                start_vid = st.session_state["faiss_index"].ntotal
+                chunks_data = []
+                for i, (chk, emb) in enumerate(zip(chunks, embs)):
+                    vid = start_vid + i
+                    chunks_data.append((vid, doc_to_save, i, chk, emb))
+                    
+                add_chunks(chunks_data)
+                st.session_state["faiss_index"].add(embs.astype("float32"))
+                new_files_processed += 1
+                
+        status.update(label="✅ Processing complete!", state="complete", expanded=False)
+        
+    faiss.write_index(st.session_state["faiss_index"], "corpus.index")
+    st.session_state["registry"] = get_chunk_registry()
+    
+    return new_files_processed, skipped_files, empty_docs
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     # Compact brand header
@@ -153,6 +309,15 @@ with st.sidebar:
                           help="Cosine similarity above which a pair is flagged.")
     use_chunk_matrix = st.checkbox("Use chunk-level similarity matrix", value=False)
     
+    if st.button("🗑️ Clear Entire Corpus", use_container_width=True, type="primary"):
+        clear_all_data()
+        st.session_state["faiss_index"] = build_index_from_matrix(np.empty((0, 384)))
+        st.session_state["registry"] = []
+        import faiss
+        faiss.write_index(st.session_state["faiss_index"], "corpus.index")
+        st.success("Corpus successfully cleared!")
+        st.rerun()
+    
     with st.expander("⚡ FAISS Options", expanded=False):
         faiss_top_k = st.slider("FAISS: matches per chunk", 1, 20, value=5)
         
@@ -181,7 +346,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.title("🔍 Semantic Plagiarism Detection System")
 st.markdown(
-    "Upload student PDFs to detect **semantic similarity** and paraphrased content "
+    "Upload student documents to detect **semantic similarity** and paraphrased content "
     "using advanced transformer embeddings and **FAISS vector search**."
 )
 
@@ -247,49 +412,36 @@ if _is_admin and st.session_state.get("page") == "user_management":
 
 # ── File uploader ──────────────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
-    "📂 Upload Assignment PDFs", type=["pdf"],
-    accept_multiple_files=True, help="Upload 2 or more PDF files.",
+    "📂 Upload Assignment Documents to Corpus", type=["pdf", "docx", "txt"],
+    accept_multiple_files=True, help="Upload files (PDF, DOCX, TXT) to index into the corpus database.",
 )
-if not uploaded_files or len(uploaded_files) < 2:
-    st.info("👆 Please upload **at least 2** PDF assignment files to begin.")
+if uploaded_files:
+    c_btn, _ = st.columns([1, 3])
+    with c_btn:
+        if st.button("🚀 Process & Index Uploads", use_container_width=True):
+            n_added, skipped, empty = process_new_files(uploaded_files)
+            if n_added > 0:
+                st.success(f"✅ Successfully indexed {n_added} new documents!")
+            if skipped:
+                st.warning(f"⚠️ Skipped duplicate files:\n" + "\n".join([f"- {s}" for s in skipped]))
+            if empty:
+                st.warning(f"⚠️ Skipped empty files:\n" + "\n".join([f"- {e}" for e in empty]))
+            st.rerun()
+
+active_docs = get_all_documents()
+doc_names = [d["filename"] for d in active_docs]
+n_docs = len(doc_names)
+
+if n_docs == 0:
+    st.info("👆 The corpus database is currently empty. Please upload and index at least 2 documents to start.")
     st.stop()
 
-# ── Pipeline (cached) ──────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def run_pipeline(file_bytes_dict: dict):
-    raw_texts = {
-        name: extract_text_from_pdf(_io.BytesIO(data))
-        for name, data in file_bytes_dict.items()
-    }
-    chunked_docs = chunk_documents(raw_texts)
-    embeddings   = embed_documents(chunked_docs)
-    sim_df       = document_similarity_matrix(embeddings)
-
-    names = list(embeddings.keys())
-    n     = len(names)
-    chunk_mat = np.zeros((n, n))
-    for i, na in enumerate(names):
-        for j, nb in enumerate(names):
-            if i == j:
-                chunk_mat[i, j] = 1.0
-            elif j > i:
-                ea, eb = embeddings[na], embeddings[nb]
-                score  = float(np.max(cosine_similarity(ea, eb))) if ea.size and eb.size else 0.0
-                chunk_mat[i, j] = chunk_mat[j, i] = score
-    chunk_sim_df = pd.DataFrame(chunk_mat, index=names, columns=names)
-
-    faiss_index, registry = build_index(embeddings, chunked_docs)
-    return raw_texts, chunked_docs, embeddings, sim_df, chunk_sim_df, faiss_index, registry
-
-file_bytes_dict = {f.name: f.read() for f in uploaded_files}
-
-with st.spinner("🧠 Processing PDFs, building embeddings and FAISS index…"):
-    raw_texts, chunked_docs, embeddings, sim_df, chunk_sim_df, faiss_index, registry = \
-        run_pipeline(file_bytes_dict)
-
-empty_docs = [name for name, text in raw_texts.items() if not text.strip()]
-if empty_docs:
-    st.warning(f"⚠️ **Could not extract text from:** {', '.join(empty_docs)}.")
+# Load states from database and session state
+sim_df, chunk_sim_df, embeddings = compute_matrices_from_db()
+raw_texts = get_all_raw_texts()
+chunked_docs = get_all_chunk_texts()
+faiss_index = st.session_state["faiss_index"]
+registry = st.session_state["registry"]
 
 active_sim_df = chunk_sim_df if use_chunk_matrix else sim_df
 flags         = flag_plagiarism(active_sim_df, threshold=threshold)
@@ -313,13 +465,15 @@ col4.metric("📈 Avg Similarity",  f"{avg_sim:.1%}")
 col5.metric("🗂️ FAISS Vectors",  faiss_index.ntotal)
 st.divider()
 
-# ── Tabs (5 only) ──────────────────────────────────────────────────────────────
-tab_warnings, tab_faiss, tab_matrix, tab_heatmap, tab_drill = st.tabs([
+# ── Tabs (7 tabs) ──────────────────────────────────────────────────────────────
+tab_warnings, tab_faiss, tab_matrix, tab_heatmap, tab_drill, tab_network, tab_corpus = st.tabs([
     "⚠️ Plagiarism Warnings",
     "⚡ FAISS Chunk Search",
     "📋 Similarity Matrix",
     "🗺️ Heatmap",
     "🔬 Pair Drill-Down",
+    "🕸️ Plagiarism Network",
+    "🗃️ Manage Corpus",
 ])
 
 # ══ TAB 1 ═════════════════════════════════════════════════════════════════════
@@ -428,7 +582,7 @@ with tab_faiss:
     query_text = st.text_area("Paste a text snippet:", height=120,
                               placeholder="Paste a paragraph from a suspected plagiarised source…")
     if st.button("🔍 Search Assignments", key="custom_query") and query_text.strip():
-        from utils.embedding_model import embed_chunks
+        from src.core.embedding_model import embed_chunks
         with st.spinner("Embedding query and searching…"):
             query_vec = embed_chunks([query_text.strip()])[0]
             results   = search_similar_chunks(query_vec, faiss_index, registry,
@@ -577,6 +731,18 @@ with tab_drill:
                             f"<div style='text-align:right; margin-top: 10px;'>{badge}</div>",
                             unsafe_allow_html=True,
                         )
+                        
+                        translate_key = f"trans_{doc_a}_{doc_b}_{rank}"
+                        if st.checkbox("🌐 Translate to English", key=translate_key):
+                            col_t1, col_t2 = st.columns(2)
+                            with col_t1:
+                                trans_a = translate_text(ca, "en")
+                                if trans_a.lower().strip() != ca.lower().strip():
+                                    st.caption(f"**Translated:** {trans_a}")
+                            with col_t2:
+                                trans_b = translate_text(cb, "en")
+                                if trans_b.lower().strip() != cb.lower().strip():
+                                    st.caption(f"**Translated:** {trans_b}")
             else:
                 st.success("No paragraph pairs above the threshold for this pair.")
 
@@ -588,6 +754,106 @@ with tab_drill:
             with t2:
                 st.markdown(f"**{doc_b}**")
                 st.text_area("", raw_texts.get(doc_b, "(empty)"), height=300, key="tb")
+
+# ══ TAB 6 ═════════════════════════════════════════════════════════════════════
+with tab_network:
+    st.subheader("🕸️ Plagiarism Network Graph")
+    st.markdown(
+        "Visualize document relationships as a connection network. "
+        "Each circle represents a document. Lines connect documents that share similarity "
+        "above the connection threshold. Thicker lines indicate higher similarity."
+    )
+    
+    net_col1, net_col2 = st.columns([3, 1])
+    with net_col1:
+        network_threshold = st.slider(
+            "Network Connection Threshold", 0.50, 0.99,
+            value=threshold, step=0.01, key="net_threshold_slider",
+            help="Minimum similarity score required to connect two documents in the graph."
+        )
+    with net_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        show_isolated = st.checkbox("Show isolated documents", value=True,
+                                    help="Uncheck to hide documents with no suspicious connections.")
+
+    import networkx as nx
+    G_stats = nx.Graph()
+    for name in doc_names:
+        G_stats.add_node(name)
+    for i in range(len(doc_names)):
+        for j in range(i + 1, len(doc_names)):
+            score = float(active_sim_df.iloc[i, j])
+            if score >= network_threshold:
+                G_stats.add_edge(doc_names[i], doc_names[j])
+                
+    if not show_isolated:
+        nodes_to_keep = [node for node, deg in G_stats.degree() if deg > 0]
+        filtered_sim_df = active_sim_df.loc[nodes_to_keep, nodes_to_keep]
+    else:
+        filtered_sim_df = active_sim_df
+
+    if len(filtered_sim_df) == 0:
+        st.info("No connections found above the threshold. Try lowering the threshold or checking 'Show isolated documents'.")
+    else:
+        with st.spinner("Generating network graph layout..."):
+            fig_net = plot_similarity_network(filtered_sim_df, threshold=network_threshold, title="")
+            st.plotly_chart(fig_net, use_container_width=True)
+            
+        st.subheader("📊 Graph Insights")
+        stat_c1, stat_c2, stat_c3 = st.columns(3)
+        
+        components = list(nx.connected_components(G_stats))
+        num_clusters = sum(1 for c in components if len(c) > 1)
+        
+        degrees = dict(G_stats.degree())
+        max_deg = max(degrees.values()) if degrees else 0
+        most_connected = [node for node, deg in degrees.items() if deg == max_deg and deg > 0]
+        
+        stat_c1.metric("🕸️ Active Connections", G_stats.number_of_edges())
+        stat_c2.metric("🔗 Plagiarism Clusters", num_clusters)
+        if most_connected:
+            stat_c3.metric("🚨 Most Flagged Node", most_connected[0].split(".")[0], f"{max_deg} connections")
+        else:
+            stat_c3.metric("🚨 Most Flagged Node", "None", "0 connections")
+
+# ══ TAB 7 ═════════════════════════════════════════════════════════════════════
+with tab_corpus:
+    st.subheader("🗃️ Manage Corpus Database")
+    st.markdown("View, inspect, and delete documents stored in the database.")
+    
+    docs = get_all_documents()
+    if not docs:
+        st.info("No documents in the database.")
+    else:
+        # Create a table showing stats
+        table_data = []
+        from src.db.corpus_db import get_document_chunks_count
+        for d in docs:
+            n_chunks = get_document_chunks_count(d["filename"])
+            table_data.append({
+                "Filename": d["filename"],
+                "Upload Date": d["upload_date"][:19].replace("T", " "),
+                "Chunks": n_chunks
+            })
+        st.dataframe(pd.DataFrame(table_data), use_container_width=True)
+        
+        # Selectbox to delete a document
+        st.subheader("🗑️ Delete Document")
+        doc_to_delete = st.selectbox("Select document to delete from corpus", [""] + doc_names)
+        if doc_to_delete:
+            st.warning(f"Are you sure you want to delete **{doc_to_delete}**? This will remove its chunks and rebuild the FAISS index.")
+            if st.button("Confirm Delete", type="primary"):
+                with st.spinner("Deleting document and rebuilding index..."):
+                    delete_document(doc_to_delete)
+                    # Rebuild the FAISS index from remaining embeddings
+                    embs = get_all_embeddings()
+                    st.session_state["faiss_index"] = build_index_from_matrix(embs)
+                    # Save index
+                    import faiss
+                    faiss.write_index(st.session_state["faiss_index"], "corpus.index")
+                    st.session_state["registry"] = get_chunk_registry()
+                st.success(f"Deleted {doc_to_delete} successfully!")
+                st.rerun()
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()

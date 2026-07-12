@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
-import utils.embedding_model as embedding_model
-from utils.embedding_model import embed_chunks, embed_documents, get_document_embedding
+import src.core.embedding_model as embedding_model
+from src.core.embedding_model import embed_chunks, embed_documents, get_document_embedding
 
 
 def _mock_encode(texts, batch_size=64, show_progress_bar=False, normalize_embeddings=True):
@@ -13,7 +13,7 @@ def _mock_encode(texts, batch_size=64, show_progress_bar=False, normalize_embedd
 def mock_model():
     model = MagicMock()
     model.encode.side_effect = _mock_encode
-    with patch("utils.embedding_model._get_model", return_value=model):
+    with patch("src.core.embedding_model._get_model", return_value=model):
         yield model
 
 
