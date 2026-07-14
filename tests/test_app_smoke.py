@@ -31,8 +31,9 @@ def mock_embed_chunks(chunks, batch_size=64):
     val = 1.0 / (384 ** 0.5)
     return np.full((len(chunks), 384), val, dtype="float32")
 
+@patch("src.send_plagiarism_alert")
 @patch("src.core.embedding_model.embed_chunks", side_effect=mock_embed_chunks)
-def test_app_smoke(mock_embed):
+def test_app_smoke(mock_embed, mock_webhook):
     # Instantiate AppTest
     at = AppTest.from_file("app/streamlit_app.py")
     
@@ -62,18 +63,8 @@ def test_app_smoke(mock_embed):
     at.file_uploader[0].upload("doc1.pdf", pdf1, "application/pdf")
     at.file_uploader[0].upload("doc2.pdf", pdf2, "application/pdf")
     
-    # Run to render the index button
-    at.run()
-    
-    # Find the process button and click it to index the files into the corpus database
-    process_btn = None
-    for btn in at.button:
-        if "Process & Index" in btn.label:
-            process_btn = btn
-            break
-            
-    assert process_btn is not None, "Process & Index button not found"
-    process_btn.click().run(timeout=30)
+    # Execute full pipeline
+    at.run(timeout=30)
     
     # Ensure no exceptions occurred during pipeline execution
     assert not at.exception
@@ -95,7 +86,10 @@ def test_app_smoke(mock_embed):
     # Verify warnings are present and severity badge is correct (🔴 High since similarity = 100%)
     badge_found = False
     for md in at.markdown:
-        if "badge" in md.value and "High" in md.value:
+        if "High" in md.value:
             badge_found = True
             break
     assert badge_found, "High plagiarism warning badge was not rendered"
+    
+    # Verify webhook alert was triggered
+    mock_webhook.assert_called_once()

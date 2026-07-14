@@ -23,6 +23,7 @@ from .faiss_index import (
     build_index_from_matrix,
 )
 from .translator import translate_text
+from .webhook import send_plagiarism_alert
 
 __all__ = [
     "extract_text_from_pdf", "extract_texts_from_pdfs",
@@ -33,5 +34,5 @@ __all__ = [
     "flag_plagiarism", "find_most_similar_chunks", "PLAGIARISM_THRESHOLD",
     "build_index", "search_similar_chunks", "find_plagiarised_chunks",
     "save_index", "load_index", "ChunkRecord", "build_index_from_matrix",
-    "translate_text",
+    "translate_text", "send_plagiarism_alert",
 ]

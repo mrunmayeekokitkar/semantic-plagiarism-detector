@@ -11,15 +11,21 @@ import streamlit as st
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Any
 
-from utils.pdf_reader      import extract_text_from_pdf
-from utils.text_chunking   import chunk_documents
-from utils.embedding_model import embed_documents
-from utils.similarity      import (
-    document_similarity_matrix, flag_plagiarism,
-    find_most_similar_chunks, PLAGIARISM_THRESHOLD,
+from src import (
+    extract_text_from_pdf,
+    chunk_documents,
+    embed_documents,
+    document_similarity_matrix,
+    flag_plagiarism,
+    find_most_similar_chunks,
+    PLAGIARISM_THRESHOLD,
+    plot_similarity_heatmap,
+    plot_chunk_similarity_comparison,
+    build_index,
+    find_plagiarised_chunks,
+    search_similar_chunks,
+    send_plagiarism_alert,
 )
-from utils.heatmap      import plot_similarity_heatmap, plot_chunk_similarity_comparison
-from utils.faiss_index  import build_index, find_plagiarised_chunks, search_similar_chunks
 
 # Must be the first Streamlit command called
 st.set_page_config(
@@ -197,6 +203,22 @@ else:
     active_sim_df = chunk_sim_df if use_chunk_matrix else sim_df
     flags         = flag_plagiarism(active_sim_df, threshold=threshold)
 
+    # ── Webhook notifications for high-similarity matches (>= 90%) ───────────────
+    if "notified_pairs" not in st.session_state:
+        st.session_state.notified_pairs = set()
+        
+    current_files = sorted(list(file_bytes_dict.keys()))
+    if "last_uploaded_files" not in st.session_state or st.session_state.last_uploaded_files != current_files:
+        st.session_state.last_uploaded_files = current_files
+        st.session_state.notified_pairs = set()
+
+    for flag in flags:
+        if flag["similarity"] >= 0.90:
+            pair_key = tuple(sorted([flag["doc_a"], flag["doc_b"]]))
+            if pair_key not in st.session_state.notified_pairs:
+                send_plagiarism_alert(flag["doc_a"], flag["doc_b"], flag["similarity"])
+                st.session_state.notified_pairs.add(pair_key)
+
     # ── Summary metrics ───────────────────────────────────────────────────────────
     st.subheader("📊 Analysis Summary")
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -328,7 +350,7 @@ else:
         query_text = st.text_area("Paste a text snippet:", height=120,
                                   placeholder="Paste a paragraph from a suspected plagiarised source…")
         if st.button("🔍 Search Assignments", key="custom_query") and query_text.strip():
-            from utils.embedding_model import embed_chunks
+            from src import embed_chunks
             with st.spinner("Embedding query and searching…"):
                 query_vec = embed_chunks([query_text.strip()])[0]
                 results   = search_similar_chunks(query_vec, faiss_index, registry,
