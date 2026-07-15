@@ -20,6 +20,7 @@ from src.core.similarity import (
 )
 from src.visualization.heatmap import plot_similarity_heatmap, plot_chunk_similarity_comparison
 from src.core.faiss_index import build_index, find_plagiarised_chunks, search_similar_chunks
+from src.core.webhook import send_plagiarism_alert
 
 # Must be the first Streamlit command called
 st.set_page_config(
@@ -196,6 +197,22 @@ else:
 
     active_sim_df = chunk_sim_df if use_chunk_matrix else sim_df
     flags         = flag_plagiarism(active_sim_df, threshold=threshold)
+
+    # ── Webhook notifications for high-similarity matches (>= 90%) ───────────────
+    if "notified_pairs" not in st.session_state:
+        st.session_state.notified_pairs = set()
+        
+    current_files = sorted(list(file_bytes_dict.keys()))
+    if "last_uploaded_files" not in st.session_state or st.session_state.last_uploaded_files != current_files:
+        st.session_state.last_uploaded_files = current_files
+        st.session_state.notified_pairs = set()
+
+    for flag in flags:
+        if flag["similarity"] >= 0.90:
+            pair_key = tuple(sorted([flag["doc_a"], flag["doc_b"]]))
+            if pair_key not in st.session_state.notified_pairs:
+                send_plagiarism_alert(flag["doc_a"], flag["doc_b"], flag["similarity"])
+                st.session_state.notified_pairs.add(pair_key)
 
     # ── Summary metrics ───────────────────────────────────────────────────────────
     st.subheader("📊 Analysis Summary")
