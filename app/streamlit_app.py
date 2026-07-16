@@ -144,13 +144,81 @@ if user_role != "admin":
     st.subheader("🔎 Secure Student Search Portal")
     st.caption("Paste a text snippet below to check its similarity against existing indexed assignments.")
     
-    st.info("🔒 Note: Direct assignment uploads and detailed breakdown panels are restricted to Administrator access.")
+    st.info("🔒 Note: Direct assignment uploads and detailed breakdown panels are restricted to Administrator access. Your queries are anonymized for privacy.")
     
     query_text = st.text_area("Paste a text snippet to check against index:", height=150,
                               placeholder="Paste a paragraph here to check for plagiarism...")
     
     if st.button("🔍 Run Quick Verification", key="user_query") and query_text.strip():
-        st.warning("To query database resources, please coordinate with your Course Administrator.")
+        # Load existing index and registry from database
+        from src.db.corpus_db import get_chunk_registry, get_all_embeddings
+        from src.core.faiss_index import build_index_from_matrix
+        
+        with st.spinner("Loading index and searching..."):
+            try:
+                registry = get_chunk_registry()
+                embeddings_matrix = get_all_embeddings()
+                
+                if embeddings_matrix.shape[0] == 0:
+                    st.warning("No documents are currently indexed. Please contact your administrator.")
+                else:
+                    # Build index from stored embeddings
+                    faiss_index = build_index_from_matrix(embeddings_matrix, index_type="auto")
+                    
+                    # Embed the query
+                    from src.core.embedding_model import embed_chunks
+                    query_vec = embed_chunks([query_text.strip()])[0]
+                    
+                    # Search with threshold
+                    faiss_threshold = threshold
+                    results = search_similar_chunks(query_vec, faiss_index, registry,
+                                                      top_k=faiss_top_k, threshold=faiss_threshold)
+                    
+                    if not results:
+                        st.success("✅ No significant matches found in the assignment database.")
+                    else:
+                        st.success(f"Found **{len(results)}** potentially similar passages.")
+                        
+                        # Anonymize document names
+                        doc_id_map = {}
+                        anon_counter = 1
+                        
+                        for record, score in results:
+                            if record.doc_name not in doc_id_map:
+                                doc_id_map[record.doc_name] = f"Document-{anon_counter:03d}"
+                                anon_counter += 1
+                        
+                        # Display anonymized results
+                        for rank, (record, score) in enumerate(results, 1):
+                            anon_doc_name = doc_id_map[record.doc_name]
+                            color = "#ff4b4b" if score >= 0.90 else "#ffa500"
+                            
+                            with st.expander(
+                                f"#{rank} · {anon_doc_name} (chunk #{record.chunk_index+1}) "
+                                f"— {score:.1%}",
+                                expanded=(rank == 1)
+                            ):
+                                cq, cm = st.columns(2)
+                                with cq:
+                                    st.markdown("**Your query:**")
+                                    st.info(query_text.strip())
+                                with cm:
+                                    st.markdown(f"**Matching passage in {anon_doc_name}:**")
+                                    st.warning(record.chunk_text)
+                                
+                                st.markdown(
+                                    f"<div style='text-align:right;'>"
+                                    f"<span style='background:{color};color:white;padding:3px 12px;"
+                                    f"border-radius:10px;font-size:0.85rem;font-weight:700;'>"
+                                    f"Similarity: {score*100:.1f}%</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                        
+                        st.caption("🔒 Document names are anonymized to protect student privacy.")
+                        
+            except Exception as e:
+                st.error(f"Error loading index: {str(e)}")
+                st.info("Please ensure documents have been indexed by an administrator.")
 else:
     # ADMINISTRATOR ACCESS: Full Upload Pipeline & Evaluation Dashboards
     uploaded_files = st.file_uploader(
