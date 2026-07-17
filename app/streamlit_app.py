@@ -8,6 +8,11 @@ import time
 import numpy as np
 import pandas as pd
 import streamlit as st
+from app.theme import (
+    get_theme_name,
+    inject_css,
+    set_theme,
+)
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Any
 from utils.warning_list import render_warning_controls
@@ -47,6 +52,7 @@ st.set_page_config(
     page_icon="🔍", layout="wide",
     initial_sidebar_state="expanded",
 )
+inject_css()
 init_db()
 st.markdown("""
 <style>
@@ -121,6 +127,19 @@ user_role = st.session_state.get("role", "user")
 with st.sidebar:
     st.markdown("<div style='font-size: 72px; line-height: 1;'>🕵️‍♂️</div>", unsafe_allow_html=True)
     st.title("⚙️ Settings")
+    
+    current_theme = get_theme_name()
+
+    selected_theme = st.radio(
+    "Theme",
+    options=["Light", "Dark"],
+    index=0 if current_theme == "Light" else 1,
+    horizontal=True,
+    key="theme_selector",
+)
+    if selected_theme != current_theme:
+      set_theme(selected_theme)
+      st.rerun()
     st.write(f"Logged in as: **{user_role.upper()}**")
 
     # Only show administrative settings to ADMIN users
