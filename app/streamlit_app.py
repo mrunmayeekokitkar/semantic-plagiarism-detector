@@ -26,6 +26,10 @@ from src.core.document_parser import (
     prepare_text_for_embedding,
 )
 from src.utils.pdf_report import generate_plagiarism_report
+from src.db.auth import init_db, verify_user, get_user_role, add_user, get_all_users, delete_user, update_password
+
+# Initialize database
+init_db()
 
 # Must be the first Streamlit command called
 st.set_page_config(
@@ -68,18 +72,13 @@ if not st.session_state.get("authenticated", False):
         login_submitted = st.form_submit_button("Log In", use_container_width=True)
         
         if login_submitted:
-            # Secure hardcoded credentials for demonstrating roles
-            if username == "admin" and password == "admin123":
+            if verify_user(username, password):
+                role = get_user_role(username)
                 st.session_state.authenticated = True
-                st.session_state.role = "admin"
+                st.session_state.role = role
+                st.session_state.username = username
                 st.session_state.last_interaction = time.time()
-                st.success("Welcome back, Administrator!")
-                st.rerun()
-            elif username == "student" and password == "student123":
-                st.session_state.authenticated = True
-                st.session_state.role = "user"
-                st.session_state.last_interaction = time.time()
-                st.success("Successfully logged in as Student.")
+                st.success(f"Welcome back, {role.capitalize()}!")
                 st.rerun()
             else:
                 st.error("Invalid Username or Password.")
@@ -353,12 +352,13 @@ else:
     st.divider()
 
     # ── Tabs ──────────────────────────────────────────────────────────────────────
-    tab_warnings, tab_faiss, tab_matrix, tab_heatmap, tab_drill = st.tabs([
+    tab_warnings, tab_faiss, tab_matrix, tab_heatmap, tab_drill, tab_users = st.tabs([
         "⚠️ Plagiarism Warnings",
         "⚡ FAISS Chunk Search",
         "📋 Similarity Matrix",
         "🗺️ Heatmap",
         "🔬 Pair Drill-Down",
+        "👥 User Management",
     ])
 
     # ══ TAB 1 ════════════════════════════════════════════════════════════════════
@@ -600,6 +600,91 @@ else:
                 with t2:
                     st.markdown(f"**{doc_b}**")
                     st.text_area("", raw_texts.get(doc_b, "(empty)"), height=300, key="tb")
+
+    # ══ TAB 6: User Management ═══════════════════════════════════════════════════
+    with tab_users:
+        st.subheader("👥 User Management")
+        st.caption("Manage user accounts and roles. Only administrators can access this panel.")
+        
+        current_username = st.session_state.get("username", "")
+        
+        # Display existing users
+        users = get_all_users()
+        if users:
+            users_df = pd.DataFrame(users)
+            st.dataframe(users_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No users found in database.")
+        
+        st.divider()
+        
+        # Add new user form
+        st.subheader("Add New User")
+        with st.form("add_user_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                new_username = st.text_input("Username")
+            with col2:
+                new_password = st.text_input("Password", type="password")
+            with col3:
+                new_role = st.selectbox("Role", ["teacher", "student", "admin"])
+            
+            add_user_submitted = st.form_submit_button("Add User", type="primary")
+            
+            if add_user_submitted:
+                if new_username and new_password:
+                    try:
+                        add_user(new_username, new_password, new_role)
+                        st.success(f"User '{new_username}' added successfully with role '{new_role}'.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding user: {str(e)}")
+                else:
+                    st.error("Username and password are required.")
+        
+        st.divider()
+        
+        # Delete user form
+        st.subheader("Delete User")
+        with st.form("delete_user_form"):
+            if users:
+                user_to_delete = st.selectbox("Select user to delete", [u["username"] for u in users if u["username"] != current_username])
+                delete_user_submitted = st.form_submit_button("Delete User", type="secondary")
+                
+                if delete_user_submitted:
+                    if user_to_delete == current_username:
+                        st.error("You cannot delete your own account.")
+                    else:
+                        try:
+                            delete_user(user_to_delete)
+                            st.success(f"User '{user_to_delete}' deleted successfully.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error deleting user: {str(e)}")
+            else:
+                st.info("No users available to delete.")
+        
+        st.divider()
+        
+        # Reset password form
+        st.subheader("Reset Password")
+        with st.form("reset_password_form"):
+            if users:
+                user_to_reset = st.selectbox("Select user", [u["username"] for u in users])
+                new_password_reset = st.text_input("New Password", type="password")
+                reset_password_submitted = st.form_submit_button("Reset Password", type="secondary")
+                
+                if reset_password_submitted:
+                    if new_password_reset:
+                        try:
+                            update_password(user_to_reset, new_password_reset)
+                            st.success(f"Password for '{user_to_reset}' reset successfully.")
+                        except Exception as e:
+                            st.error(f"Error resetting password: {str(e)}")
+                    else:
+                        st.error("New password is required.")
+            else:
+                st.info("No users available.")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
