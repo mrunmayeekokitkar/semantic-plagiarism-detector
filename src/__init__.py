@@ -21,6 +21,7 @@ from .core import (
     ChunkRecord,
     build_index_from_matrix,
     translate_text,
+    send_plagiarism_alert,
 )
 from .db import (
     init_db,
@@ -40,6 +41,8 @@ from .db import (
     delete_document,
     clear_all_data,
     get_document_chunks_count,
+    get_unique_class_sections,
+    get_documents_by_class,
 )
 from .visualization import (
     plot_similarity_heatmap,
@@ -57,10 +60,12 @@ __all__ = [
     "flag_plagiarism", "find_most_similar_chunks", "PLAGIARISM_THRESHOLD",
     "plot_similarity_heatmap", "plot_similarity_heatmap_plotly",
     "plot_chunk_similarity_comparison", "plot_similarity_network", "translate_text",
+    "send_plagiarism_alert",
     "build_index", "search_similar_chunks", "find_plagiarised_chunks",
     "save_index", "load_index", "ChunkRecord", "build_index_from_matrix",
     "init_db", "verify_user", "get_user_role", "get_all_users", "add_user", "delete_user", "update_password",
     "init_corpus_db", "add_document", "get_document_by_hash",
     "get_all_documents", "add_chunks", "get_chunk_registry",
     "get_all_embeddings", "delete_document", "clear_all_data", "get_document_chunks_count",
+    "get_unique_class_sections", "get_documents_by_class",
 ]
