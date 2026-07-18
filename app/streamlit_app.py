@@ -30,7 +30,7 @@ from src.core.webhook import send_plagiarism_alert
 from src.db import init_corpus_db, get_all_documents, delete_document, get_all_embeddings, get_chunk_registry, add_document, get_document_by_hash, add_chunks, get_unique_class_sections, get_documents_by_class
 from src.core.document_parser import (
     OCRDependencyError,
-    extract_text_from_pdf,
+    extract_text,
     prepare_text_for_embedding,
 )
 import hashlib
@@ -172,12 +172,12 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("""
 **How it works**
-1. PDFs parsed with **PyPDF2**
-2. Text split into **paragraph chunks**
-3. Chunks embedded with **all-MiniLM-L6-v2**
-4. **FAISS index** built over all chunk vectors
-5. Pairwise **cosine similarity** computed
-6. Pairs above threshold flagged
+1. Upload **PDF, DOCX, or TXT** assignment files
+2. Text is extracted according to the file type
+3. Text is split into **paragraph chunks**
+4. Chunks are embedded with **all-MiniLM-L6-v2**
+5. A **FAISS index** is built over all chunk vectors
+6. Pairs above the threshold are flagged
 """)
     st.markdown("---")
     st.caption("Semantic Plagiarism Detector · FAISS edition")
@@ -219,8 +219,9 @@ with st.sidebar:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🔍 Semantic Plagiarism Detection System")
 st.markdown(
-    "Upload student PDFs. Detects **semantic similarity** (even paraphrased text) "
-    "using transformer embeddings + **FAISS vector search**."
+    "Upload student PDF, DOCX, or TXT files. Detects **semantic similarity** "
+    "(even paraphrased text) using transformer embeddings + "
+    "**FAISS vector search**."
 )
 st.divider()
 
@@ -323,8 +324,10 @@ else:
         registry = []
     
     uploaded_files = st.file_uploader(
-        "📂 Upload Assignment PDFs", type=["pdf"],
-        accept_multiple_files=True, help="Upload 2 or more PDF files.",
+        "📂 Upload Assignment Files",
+        type=["pdf", "docx", "txt"],
+        accept_multiple_files=True,
+        help="Upload 2 or more PDF, DOCX, or TXT assignment files.",
     )
     
     file_bytes_dict = {}
@@ -336,7 +339,7 @@ else:
     # Allow analysis with existing index even without new uploads
     if not uploaded_files:
         if faiss_index is None or faiss_index.ntotal == 0:
-            st.info("👆 Please upload **at least 2** PDF assignment files to begin.")
+            st.info("👆 Please upload **at least 2** PDF, DOCX, or TXT assignment files to begin.")
             st.stop()
         else:
             st.success(f"📂 Using existing index with {faiss_index.ntotal} vectors from {len(get_all_documents())} documents")
@@ -353,7 +356,7 @@ else:
             st.stop()
     
     if len(uploaded_files) < 2:
-        st.info("👆 Please upload **at least 2** PDF assignment files to begin.")
+        st.info("👆 Please upload **at least 2** PDF, DOCX, or TXT assignment files to begin.")
         st.stop()
 
     # ── Metadata Editor Section ──────────────────────────────────────────────────
@@ -461,15 +464,15 @@ else:
         existing_index=None,
         existing_registry=None,
     ):
-        """Extract, chunk, embed and index uploaded PDF files."""
+        """Extract, chunk, embed and index uploaded assignment files."""
         raw_texts = {}
         failed_files = []
         failure_details = []
 
-        # Process every PDF so the warning can list all affected files.
+        # Process every uploaded file and collect OCR failures from scanned PDFs.
         for name, data in file_bytes_dict.items():
             try:
-                raw_texts[name] = extract_text_from_pdf(_io.BytesIO(data))
+                raw_texts[name] = extract_text(_io.BytesIO(data), name)
             except OCRDependencyError as exc:
                 failed_files.append(name)
                 failure_details.append(f"{name}: {exc}")
@@ -582,7 +585,7 @@ else:
 
         try:
             with st.spinner(
-                "🧠 Processing new PDFs, building embeddings and FAISS index…"
+                "🧠 Processing new files, building embeddings and FAISS index…"
             ):
                 (
                     raw_texts_new,
@@ -688,10 +691,14 @@ else:
             active_sim_df = None
             flags = []
     else:
-        # Check for empty PDFs (e.g. scanned images with no OCR)
+        # Check for files from which no usable text could be extracted
         empty_docs = [name for name, text in raw_texts.items() if not text.strip()]
         if empty_docs:
-            st.warning(f"⚠️ **Could not extract text from:** {', '.join(empty_docs)}. These might be scanned images or password-protected PDFs.")
+            st.warning(
+                f"⚠️ **Could not extract text from:** {', '.join(empty_docs)}. "
+                "The files may be empty, unsupported, scanned, corrupted, "
+                "or password-protected."
+            )
 
         active_sim_df = chunk_sim_df if use_chunk_matrix else sim_df
         flags         = flag_plagiarism(active_sim_df, threshold=threshold)
