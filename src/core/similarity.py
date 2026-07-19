@@ -29,8 +29,10 @@ def _validated_batch_size(batch_size: Optional[int]) -> Optional[int]:
         return None
     if isinstance(batch_size, bool):
         raise ValueError("batch_size must be an integer")
-    if isinstance(batch_size, (float, np.floating)) and not float(batch_size).is_integer():
-        raise ValueError("batch_size must be an integer")
+    if isinstance(batch_size, (float, np.floating)):
+        if not float(batch_size).is_integer():
+            raise ValueError("batch_size must be an integer")
+        batch_size = int(batch_size)
     try:
         size = int(batch_size)
     except (TypeError, ValueError) as exc:
