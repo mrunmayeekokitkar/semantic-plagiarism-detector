@@ -6,7 +6,7 @@ Unit tests for Redis cache functionality.
 
 import pytest
 import numpy as np
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from src.utils.redis_cache import (
     RedisCache,
     get_cache,
@@ -116,7 +116,6 @@ class TestRedisCache:
         index_data = b"fake_index_data"
         
         cache_faiss_index(index_key, index_data)
-        expected_key = f"faiss:index:{index_key}"
         mock_redis_client.setex.assert_called_once()
         
         mock_redis_client.get.return_value = pickle.dumps(index_data)
