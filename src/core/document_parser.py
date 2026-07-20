@@ -44,21 +44,15 @@ def validate_ocr_dpi(value: int) -> int:
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped or not stripped.lstrip("+-").isdigit():
-            raise ValueError(
-                "OCR DPI must be an integer between 150 and 400."
-            )
+            raise ValueError("OCR DPI must be an integer between 150 and 400.")
 
     try:
         dpi = int(value)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(
-            "OCR DPI must be an integer between 150 and 400."
-        ) from exc
+        raise ValueError("OCR DPI must be an integer between 150 and 400.") from exc
 
     if not MIN_OCR_DPI <= dpi <= MAX_OCR_DPI:
-        raise ValueError(
-            f"OCR DPI must be between {MIN_OCR_DPI} and {MAX_OCR_DPI}."
-        )
+        raise ValueError(f"OCR DPI must be between {MIN_OCR_DPI} and {MAX_OCR_DPI}.")
 
     return dpi
 
@@ -235,10 +229,7 @@ def _has_meaningful_text(text: str) -> bool:
     """Decide whether native extraction returned enough useful text."""
     words = re.findall(r"\b[\w'-]+\b", text or "", flags=re.UNICODE)
     alphanumeric_chars = sum(char.isalnum() for char in text or "")
-    return (
-        len(words) >= MIN_NATIVE_WORDS_PER_PAGE
-        and alphanumeric_chars >= 30
-    )
+    return len(words) >= MIN_NATIVE_WORDS_PER_PAGE and alphanumeric_chars >= 30
 
 
 def _configure_tesseract(pytesseract_module) -> None:
@@ -297,15 +288,20 @@ def _should_use_parallel() -> bool:
     """Determine if we should run parsing in parallel processes."""
     import os
     import sys
+
     # Disable parallel processing if running under pytest to preserve unit test mocks
     if "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ:
         return False
     # Disable nested multiprocessing
     try:
         import multiprocessing
+
         if multiprocessing.current_process().name != "MainProcess":
             return False
-        if hasattr(multiprocessing, "parent_process") and multiprocessing.parent_process() is not None:
+        if (
+            hasattr(multiprocessing, "parent_process")
+            and multiprocessing.parent_process() is not None
+        ):
             return False
     except Exception:
         pass
@@ -321,6 +317,7 @@ def _parse_pdf_page(
     """Helper running in a subprocess to extract text from a single PDF page."""
     import pdfplumber
     import io
+
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             page = pdf.pages[page_index]
@@ -361,7 +358,7 @@ def extract_texts_parallel(
 ) -> tuple[Dict[str, str], Dict[str, Exception]]:
     """
     Extract text from multiple files in parallel using ProcessPoolExecutor.
-    
+
     Returns:
         tuple of (results_dict, errors_dict)
     """
@@ -379,12 +376,15 @@ def extract_texts_parallel(
     if len(files_dict) == 1 or not _should_use_parallel():
         for name, data in files_dict.items():
             try:
-                results[name] = _extract_single_file_helper(data, name, ocr_language, ocr_dpi)
+                results[name] = _extract_single_file_helper(
+                    data, name, ocr_language, ocr_dpi
+                )
             except Exception as exc:
                 errors[name] = exc
         return results, errors
 
     from concurrent.futures import ProcessPoolExecutor
+
     with ProcessPoolExecutor() as executor:
         futures = {
             executor.submit(
@@ -439,6 +439,7 @@ def extract_text_from_pdf(
 
     if _should_use_parallel() and num_pages > 1:
         from concurrent.futures import ProcessPoolExecutor
+
         page_lines = [[] for _ in range(num_pages)]
         with ProcessPoolExecutor() as executor:
             futures = [
@@ -552,22 +553,23 @@ def extract_texts(files: list) -> Dict[str, str]:
             name = Path(file).name
         else:
             name = f"document_{idx + 1}"
-        
+
         try:
             files_dict[name] = _read_pdf_bytes(file)
         except Exception as exc:
             print(f"[document_parser] Error reading file data for {name}: {exc}")
             files_dict[name] = b""
-            
+
     raw_texts, errors = extract_texts_parallel(files_dict)
     if errors:
         raise next(iter(errors.values()))
-        
+
     results = {}
     for name in files_dict.keys():
         results[name] = raw_texts.get(name, "")
-        
+
     return results
+
 
 # Cross-lingual embedding preparation (Issue #46)
 # Re-exported here because parsing is the boundary where raw source text is
