@@ -39,3 +39,6 @@ deep-translator>=1.11.4
 
 # ── Code Quality ────────────────────────────────────────────────────────────────
 ruff>=0.5.0
+
+# ── Caching & Session Management ───────────────────────────────────────────────
+redis>=5.0.0                    # Redis client for session state and caching

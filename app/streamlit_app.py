@@ -64,6 +64,16 @@ from src.db.auth import (  # noqa: E402
     verify_user,
 )
 from src.utils.pdf_report import generate_plagiarism_report  # noqa: E402
+from src.utils.redis_cache import (  # noqa: E402
+    cache_session_state,
+    get_session_state,
+    clear_session,
+    cache_faiss_index,
+    get_faiss_index,
+    cache_analysis_results,
+    get_analysis_results,
+    get_cache,
+)
 from src.visualization.heatmap import (  # noqa: E402
     plot_chunk_similarity_comparison,
     plot_similarity_heatmap,
@@ -77,6 +87,13 @@ init_corpus_db()
 
 # FAISS index file path
 _INDEX_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "corpus.index"))
+
+# Generate unique session ID for this Streamlit session
+if "session_id" not in st.session_state:
+    import uuid
+    st.session_state.session_id = str(uuid.uuid4())
+
+SESSION_ID = st.session_state.session_id
 
 # Initialize database
 init_db()
@@ -99,8 +116,17 @@ st.markdown("""
 TIMEOUT_LIMIT = 15 * 60  # 15 minutes in seconds
 
 # 1. Handle Automatic Session Expiration (Inactivity Check)
-if "last_interaction" in st.session_state and st.session_state.get("authenticated", False):
-    elapsed_time = time.time() - st.session_state.last_interaction
+# Try to get last_interaction from Redis cache first, fallback to session_state
+cached_last_interaction = get_session_state(SESSION_ID, "last_interaction")
+if cached_last_interaction is not None:
+    last_interaction = cached_last_interaction
+elif "last_interaction" in st.session_state:
+    last_interaction = st.session_state.last_interaction
+else:
+    last_interaction = None
+
+if last_interaction and st.session_state.get("authenticated", False):
+    elapsed_time = time.time() - last_interaction
     if elapsed_time > TIMEOUT_LIMIT:
         # Clear sensitive session variables on timeout
         for key in [
@@ -113,11 +139,14 @@ if "last_interaction" in st.session_state and st.session_state.get("authenticate
         ]:
             if key in st.session_state:
                 del st.session_state[key]
+        # Clear Redis session data
+        clear_session(SESSION_ID)
         st.warning("⏱️ Your session has expired due to 15 minutes of inactivity. Please log in again.")
         st.stop()
     else:
         # Record a timestamp of the latest user interaction
         st.session_state.last_interaction = time.time()
+        cache_session_state(SESSION_ID, "last_interaction", time.time())
 
 # 2. Render Login UI if not authenticated
 if not st.session_state.get("authenticated", False):
@@ -136,6 +165,11 @@ if not st.session_state.get("authenticated", False):
                 st.session_state.role = role
                 st.session_state.username = username
                 st.session_state.last_interaction = time.time()
+                # Cache session state in Redis
+                cache_session_state(SESSION_ID, "authenticated", True)
+                cache_session_state(SESSION_ID, "role", role)
+                cache_session_state(SESSION_ID, "username", username)
+                cache_session_state(SESSION_ID, "last_interaction", time.time())
                 st.success(f"Welcome back, {role.capitalize()}!")
                 st.rerun()
             username = username.strip().lower()
@@ -153,6 +187,11 @@ if not st.session_state.get("authenticated", False):
                     st.session_state.username = username
                     st.session_state.role = role
                     st.session_state.last_interaction = time.time()
+                    # Cache session state in Redis
+                    cache_session_state(SESSION_ID, "authenticated", True)
+                    cache_session_state(SESSION_ID, "username", username)
+                    cache_session_state(SESSION_ID, "role", role)
+                    cache_session_state(SESSION_ID, "last_interaction", time.time())
 
                     st.success(f"Welcome back, {username}!")
                     st.rerun()
@@ -233,6 +272,8 @@ with st.sidebar:
         for key in ["authenticated", "username", "role", "last_interaction"]:
             if key in st.session_state:
                 del st.session_state[key]
+        # Clear Redis session data
+        clear_session(SESSION_ID)
         st.rerun()
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -333,20 +374,49 @@ if user_role != "admin":
 else:
     # ADMINISTRATOR ACCESS: Full Upload Pipeline & Evaluation Dashboards
     
-    # Load or initialize FAISS index
-    if os.path.exists(_INDEX_PATH):
+    # Load or initialize FAISS index (try Redis cache first, fallback to disk)
+    index_key = "corpus_index"
+    cached_index_data = get_faiss_index(index_key)
+    
+    if cached_index_data is not None and os.path.exists(_INDEX_PATH):
+        try:
+            # Load from Redis cache
+            import faiss
+            import io
+            index_buffer = io.BytesIO(cached_index_data)
+            faiss_index = faiss.deserialize_index(faiss.read_index(index_buffer))
+            registry = get_chunk_registry()
+            st.info(f"📂 Loaded FAISS index from Redis cache with {faiss_index.ntotal} vectors")
+        except Exception as e:
+            print(f"[Redis] Error loading cached index: {e}, falling back to disk")
+            if os.path.exists(_INDEX_PATH):
+                faiss_index = load_index(_INDEX_PATH)
+                registry = get_chunk_registry()
+                st.info(f"📂 Loaded existing FAISS index from disk with {faiss_index.ntotal} vectors")
+            else:
+                faiss_index = None
+                registry = []
+    elif os.path.exists(_INDEX_PATH):
         faiss_index = load_index(_INDEX_PATH)
         registry = get_chunk_registry()
-        st.info(f"📂 Loaded existing FAISS index with {faiss_index.ntotal} vectors")
+        st.info(f"📂 Loaded existing FAISS index from disk with {faiss_index.ntotal} vectors")
     else:
         faiss_index = None
         registry = []
 
     if "analysis_results" not in st.session_state:
         st.session_state.analysis_results = None
+        # Try to load from Redis cache
+        cached_results = get_analysis_results(f"{SESSION_ID}:current")
+        if cached_results is not None:
+            st.session_state.analysis_results = cached_results
 
     if "analysis_file_signature" not in st.session_state:
         st.session_state.analysis_file_signature = None
+        # Try to load from Redis cache
+        cached_signature = get_session_state(SESSION_ID, "analysis_file_signature")
+        if cached_signature is not None:
+            st.session_state.analysis_file_signature = cached_signature
     
     uploaded_files = st.file_uploader(
         "📂 Upload Assignment PDFs",
@@ -617,6 +687,9 @@ else:
 
         st.session_state.analysis_results = analysis_results
         st.session_state.analysis_file_signature = file_signature
+        # Cache analysis results in Redis
+        cache_analysis_results(f"{SESSION_ID}:current", analysis_results)
+        cache_session_state(SESSION_ID, "analysis_file_signature", file_signature)
 
         # Persist only documents that are not already stored. Database duplicate
         # detection must not decide whether dashboard data remains visible.
@@ -695,6 +768,16 @@ else:
         # source of truth for this upload set throughout the Streamlit session.
         if faiss_index is not None:
             save_index(faiss_index, _INDEX_PATH)
+            # Cache FAISS index in Redis
+            try:
+                import faiss
+                import io
+                index_buffer = io.BytesIO()
+                faiss.write_index(faiss_index, index_buffer)
+                index_buffer.seek(0)
+                cache_faiss_index(index_key, index_buffer.getvalue())
+            except Exception as e:
+                print(f"[Redis] Error caching FAISS index: {e}")
 
     else:
         (
@@ -715,6 +798,9 @@ else:
     ):
         st.session_state.analysis_results = None
         st.session_state.analysis_file_signature = None
+        # Clear Redis cache for analysis results
+        get_cache().delete(f"analysis:{SESSION_ID}:current")
+        get_cache().delete(f"session:{SESSION_ID}:analysis_file_signature")
         run_pipeline.clear()
         st.rerun()
 
