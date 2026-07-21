@@ -95,6 +95,10 @@ from src.db.auth import (
     get_tour_completed,
     set_tour_completed,
 )
+try:
+    from src.utils.excel_export import export_similarity_matrix_to_excel
+except ImportError:
+    from utils.excel_export import export_similarity_matrix_to_excel
 
 # Initialize corpus database
 init_corpus_db()
@@ -1365,12 +1369,30 @@ else:
 
             styled_df = active_sim_df.style.format("{:.4f}").map(_highlight)
             st.dataframe(styled_df, use_container_width=True)
-            st.download_button(
-                "⬇️ Download CSV",
-                active_sim_df.to_csv().encode("utf-8"),
-                "similarity_matrix.csv",
-                "text/csv",
-            )
+
+            # Export options row
+            col_csv, col_excel = st.columns(2)
+
+            with col_csv:
+                st.download_button(
+                    "⬇️ Download CSV",
+                    active_sim_df.to_csv().encode("utf-8"),
+                    "similarity_matrix.csv",
+                    "text/csv",
+                    use_container_width=True,
+                )
+
+            with col_excel:
+                excel_data = export_similarity_matrix_to_excel(
+                    active_sim_df, threshold=threshold
+                )
+                st.download_button(
+                    "📊 Export as Styled Excel (.xlsx)",
+                    excel_data,
+                    "similarity_matrix_styled.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
     # ══ TAB 4 ════════════════════════════════════════════════════════════════════
     with tab_heatmap:
