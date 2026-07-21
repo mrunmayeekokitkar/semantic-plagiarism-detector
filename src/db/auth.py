@@ -30,6 +30,12 @@ VALID_ROLES = {"admin", "teacher"}
 
 def _connect() -> sqlite3.Connection:
     return sqlite3.connect(_DB_PATH, check_same_thread=False)
+def _hash_password(password: str) -> str:
+    """Return a bcrypt hash for the given password."""
+    return bcrypt.hashpw(
+        password.encode(),
+        bcrypt.gensalt(10),
+    ).decode()
 
 
 def _validate_username(username: str) -> str:
@@ -91,10 +97,14 @@ def init_db() -> None:
         ).fetchone()
 
         if not exists:
+
             hashed = bcrypt.hashpw(
                 b"admin123",
                 bcrypt.gensalt(10),
             ).decode()
+
+
+            hashed = _hash_password("admin123")
 
             conn.execute(
                 "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
@@ -136,6 +146,7 @@ def get_user_role(username: str) -> str | None:
 
 def add_user(username: str, password: str, role: str = "teacher") -> None:
     """Insert a new user with a bcrypt-hashed password."""
+
     username = _validate_username(username)
     password = _validate_password(password)
     role = _validate_role(role)
@@ -144,6 +155,9 @@ def add_user(username: str, password: str, role: str = "teacher") -> None:
         password.encode(),
         bcrypt.gensalt(10),
     ).decode()
+
+
+    hashed = _hash_password(password)
 
     with _connect() as conn:
         conn.execute(
@@ -184,6 +198,7 @@ def delete_user(username: str) -> None:
 
 def update_password(username: str, new_password: str) -> None:
     """Update a user's password with a new bcrypt hash."""
+
     username = _validate_username(username)
     new_password = _validate_password(new_password)
 
@@ -191,6 +206,9 @@ def update_password(username: str, new_password: str) -> None:
         new_password.encode(),
         bcrypt.gensalt(10),
     ).decode()
+
+
+    hashed = _hash_password(new_password)
 
     with _connect() as conn:
         conn.execute(
