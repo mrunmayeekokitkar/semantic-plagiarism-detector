@@ -68,8 +68,7 @@ def filter_warnings(
     return [
         item
         for item in normalised
-        if query in item["doc_a"].casefold()
-        or query in item["doc_b"].casefold()
+        if query in item["doc_a"].casefold() or query in item["doc_b"].casefold()
     ]
 
 
@@ -93,6 +92,7 @@ def sort_warnings(
         def key(item: Mapping[str, Any]):
             value = item[field]
             return value.casefold() if isinstance(value, str) else value
+
         return key
 
     items.sort(key=key_for(secondary_field), reverse=secondary_descending)
@@ -168,6 +168,7 @@ def render_warning_controls(
     flags: Sequence[Mapping[str, Any]],
     *,
     threshold: float,
+    ai_probabilities: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     if "warning_page" not in st.session_state:
         st.session_state.warning_page = 1
@@ -239,15 +240,17 @@ def render_warning_controls(
     if current_page.page != st.session_state.warning_page:
         st.session_state.warning_page = current_page.page
 
-    export_df = pd.DataFrame([
-        {
-            "Document A": item["doc_a"],
-            "Document B": item["doc_b"],
-            "Similarity": item["similarity"],
-            "Severity": item["severity"],
-        }
-        for item in sorted_flags
-    ])
+    export_df = pd.DataFrame(
+        [
+            {
+                "Document A": item["doc_a"],
+                "Document B": item["doc_b"],
+                "Similarity": item["similarity"],
+                "Severity": item["severity"],
+            }
+            for item in sorted_flags
+        ]
+    )
 
     left, right = st.columns([3, 2])
     with left:
@@ -278,6 +281,16 @@ def render_warning_controls(
                     min(1.0, max(0.0, float(flag["similarity"]))),
                     text=f"Similarity: {flag['similarity'] * 100:.1f}%",
                 )
+                
+                # Display AI probabilities if available
+                if ai_probabilities:
+                    ai_a = ai_probabilities.get(flag['doc_a'], {}).get('overall', 0.0)
+                    ai_b = ai_probabilities.get(flag['doc_b'], {}).get('overall', 0.0)
+                    if ai_a > 0 or ai_b > 0:
+                        st.caption(
+                            f"🤖 AI Prob: {flag['doc_a']}: {ai_a:.1%} | "
+                            f"{flag['doc_b']}: {ai_b:.1%}"
+                        )
             with c2:
                 st.markdown(
                     (
