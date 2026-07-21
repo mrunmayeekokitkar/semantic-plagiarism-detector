@@ -154,6 +154,8 @@ st.markdown(
 # ── SESSION TIMEOUT & ROUTE PROTECTION ────────────────────────────────────────
 TIMEOUT_LIMIT = 15 * 60  # 15 minutes in seconds
 
+
+# 1. Handle Automatic Session Expiration (Inactivity Check)
 cached_last_interaction = get_session_state(SESSION_ID, "last_interaction")
 if cached_last_interaction is not None:
     last_interaction = cached_last_interaction
@@ -211,6 +213,8 @@ if not st.session_state.get("authenticated", False):
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
+
+
 # Active user role
 
 user_role = st.session_state.get("role", "user")
@@ -260,7 +264,12 @@ with st.sidebar:
             0.99,
             value=PLAGIARISM_THRESHOLD,
             step=0.01,
+
+
+            help="Cosine similarity above which a pair is flagged.",
+
           
+
             help="Cosine similarity threshold for flagging.",
 
             key="threshold_slider",
@@ -452,6 +461,20 @@ st.write(f"Processed **{len(raw_texts)}** documents with Chunk Size: `{chunk_siz
         key="class_filter_selectbox",
     )
 
+
+    st.markdown("---")
+    st.markdown("""
+**How it works**
+1. Upload **PDF, DOCX, or TXT** assignment files or import from Google Drive
+2. Text is extracted according to the file type
+3. Text is split into **paragraph chunks**
+4. Chunks are embedded with **all-MiniLM-L6-v2**
+5. A **FAISS index** is built over all chunk vectors
+6. Pairs above the threshold are flagged
+""")
+    st.markdown("---")
+    st.caption("Semantic Plagiarism Detector · FAISS edition")
+
     if user_role == "admin":
         st.markdown("---")
         st.markdown("### 📁 Document Management")
@@ -474,6 +497,8 @@ st.write(f"Processed **{len(raw_texts)}** documents with Chunk Size: `{chunk_siz
                                 os.remove(_INDEX_PATH)
                         st.rerun()
 
+
+
     st.markdown("---")
     if st.button("🚪 Log Out", use_container_width=True, key="logout_button"):
         for key in ["authenticated", "username", "role", "last_interaction"]:
@@ -481,6 +506,114 @@ st.write(f"Processed **{len(raw_texts)}** documents with Chunk Size: `{chunk_siz
                 del st.session_state[key]
         clear_session(SESSION_ID)
         st.rerun()
+
+
+# ── Onboarding Tour for First-Time Admin Users ───────────────────────────────────
+if Tour is not None and user_role == "admin" and not get_tour_completed(st.session_state.username):
+    username = st.session_state.username
+    
+    if st.button("🎯 Start Guided Tour", key="start_tour_button", type="primary"):
+        st.session_state.show_tour = True
+    
+    if st.session_state.get("show_tour", False):
+        tour_steps = [
+            Tour.info(
+                title="👋 Welcome to the Plagiarism Detection System!",
+                desc="This guided tour will walk you through the key features to help you get started."
+            ),
+            Tour.bind("threshold_slider", 
+                      title="⚙️ Plagiarism Threshold",
+                      desc="Adjust similarity threshold. Recommended: 0.59",
+                      side="right"),
+            Tour.bind("class_filter_selectbox",
+                      title="🔍 Class Filter",
+                      desc="Filter analysis results by specific class sections.",
+                      side="right"),
+            Tour.info(
+                title="📊 Analysis Dashboard",
+                desc="View similarity metrics, flagged pairs, and comparisons in the tabs below."
+            ),
+            Tour.info(
+                title="🎉 You're All Set!",
+                desc="You can now start uploading assignments and detecting plagiarism."
+            ),
+        ]
+        
+        tour = Tour(steps=tour_steps)
+        tour.start()
+        
+        set_tour_completed(username, True)
+        st.session_state.show_tour = False
+        st.success("✅ Onboarding tour completed!")
+        st.rerun()
+
+# ── Header ────────────────────────────────────────────────────────────────────
+st.title("🔍 Semantic Plagiarism Detection System")
+st.markdown(
+    "Upload student PDF, DOCX, or TXT files. Detects **semantic similarity** "
+    "(even paraphrased text) using transformer embeddings + **FAISS vector search**."
+)
+st.divider()
+
+# ── MAIN APPLICATION SECTIONS ──────────────────────────────────────────────────
+
+if user_role != "admin":
+    # STANDARD USER VIEW
+    st.subheader("🔎 Secure Student Search Portal")
+    st.caption("Paste a text snippet below to check its similarity against existing indexed assignments.")
+
+    st.info("🔒 Note: Direct assignment uploads are restricted to Administrator access.")
+
+    query_text = st.text_area(
+        "Paste a text snippet to check against index:",
+        height=150,
+        placeholder="Paste a paragraph here to check for plagiarism...",
+    )
+
+    if st.button("🔍 Run Quick Verification", key="user_query") and query_text.strip():
+        from src.db.corpus_db import get_chunk_registry, get_all_embeddings
+        from src.core.faiss_index import build_index_from_matrix
+
+        with st.spinner("Loading index and searching..."):
+            try:
+                registry = get_chunk_registry()
+                embeddings_matrix = get_all_embeddings()
+
+                if embeddings_matrix.shape[0] == 0:
+                    st.warning("No documents are currently indexed.")
+                else:
+                    faiss_index = build_index_from_matrix(embeddings_matrix, index_type="auto")
+                    from src.core.embedding_model import embed_chunks
+
+                    query_vec = embed_chunks([query_text.strip()])[0]
+                    faiss_threshold = threshold
+                    results = search_similar_chunks(
+                        query_vec,
+                        faiss_index,
+                        registry,
+                        top_k=faiss_top_k,
+                        threshold=faiss_threshold,
+                    )
+
+                    if selected_class != "All Classes":
+                        class_docs = get_documents_by_class(selected_class)
+                        results = [
+                            (record, score)
+                            for record, score in results
+                            if record.doc_name in class_docs
+                        ]
+
+                    if not results:
+                        st.success("✅ No significant matches found in the assignment database.")
+                    else:
+                        st.success(f"Found **{len(results)}** potentially similar passages.")
+
+            except Exception as e:
+                st.error(f"Error loading index: {str(e)}")
+else:
+    # ADMINISTRATOR ACCESS: Full Upload & Pipeline UI
+    index_key = "corpus_index"
+    cached_index_data = get_faiss_index(index_key)
 
 # ── Main Header ───────────────────────────────────────────────────────────────
 st.title("🔍 Semantic Plagiarism Detection System")
@@ -500,12 +633,26 @@ if user_role != "admin":
 else:
     # ADMIN FULL ACCESS VIEW
     cached_index_data = get_faiss_index("corpus_index")
+
     if cached_index_data is not None and os.path.exists(_INDEX_PATH):
         try:
             import faiss
             index_buffer = _io.BytesIO(cached_index_data)
             faiss_index = faiss.deserialize_index(faiss.read_index(index_buffer))
             registry = get_chunk_registry()
+
+        except Exception:
+
+            if os.path.exists(_INDEX_PATH):
+                faiss_index = load_index(_INDEX_PATH)
+                registry = get_chunk_registry()
+            else:
+                faiss_index = None
+                registry = []
+
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = None
+
             st.info(f"📂 Loaded FAISS index from Redis cache with {faiss_index.ntotal} vectors")
         except Exception as e:
             print(f"[Redis] Error loading cached index: {e}, falling back to disk")
@@ -526,18 +673,33 @@ else:
     if "analysis_results" not in st.session_state:
         st.session_state.analysis_results = None
         # Try to load from Redis cache
+
         cached_results = get_analysis_results(f"{SESSION_ID}:current")
         if cached_results is not None:
             st.session_state.analysis_results = cached_results
 
     if "analysis_file_signature" not in st.session_state:
         st.session_state.analysis_file_signature = None
+
+        cached_signature = get_session_state(SESSION_ID, "analysis_file_signature")
+        if cached_signature is not None:
+            st.session_state.analysis_file_signature = cached_signature
+
+            faiss_index = load_index(_INDEX_PATH) if os.path.exists(_INDEX_PATH) else None
+            registry = get_chunk_registry()
+    else:
+        faiss_index = load_index(_INDEX_PATH) if os.path.exists(_INDEX_PATH) else None
+        registry = get_chunk_registry()
+
         # Try to load from Redis cache
         cached_signature = get_session_state(SESSION_ID, "analysis_file_signature")
         if cached_signature is not None:
             st.session_state.analysis_file_signature = cached_signature
     
 
+
+
+    # 1. LOCAL FILE UPLOADER
     uploaded_files = st.file_uploader(
         "📂 Upload Assignments",
         type=["pdf", "docx", "txt"],
@@ -545,11 +707,194 @@ else:
         key="file_uploader",
     )
 
+
+    # 2. GOOGLE DRIVE IMPORT SECTION (#146)
+    from src.utils.google_drive import bulk_download_drive_folder
+
+    if "drive_files_dict" not in st.session_state:
+        st.session_state.drive_files_dict = {}
+
+    with st.expander("🌐 Import from Google Drive Folder", expanded=False):
+        st.caption("Paste a shared Google Drive folder link or ID to bulk-download assignments.")
+        
+        drive_folder_input = st.text_input(
+            "Google Drive Folder Link / ID:",
+            placeholder="https://drive.google.com/drive/folders/1A2B3C...",
+            key="drive_folder_url_input",
+        )
+        
+        drive_api_key = st.text_input(
+            "API Key (Optional):",
+            type="password",
+            key="drive_api_key_input",
+        )
+
+        if st.button("📥 Import Files from Drive", type="primary", use_container_width=True):
+            if not drive_folder_input.strip():
+                st.error("Please enter a valid Google Drive folder link or ID.")
+            else:
+                with st.spinner("Connecting to Google Drive API & downloading files..."):
+                    try:
+                        downloaded_dict, downloaded_names = bulk_download_drive_folder(
+                            folder_url_or_id=drive_folder_input,
+                            api_key=drive_api_key.strip() if drive_api_key else None,
+                        )
+                        
+                        if downloaded_dict:
+                            st.session_state.drive_files_dict.update(downloaded_dict)
+                            st.success(f"✅ Imported {len(downloaded_names)} files: {', '.join(downloaded_names)}")
+                            st.rerun()
+                        else:
+                            st.warning("No supported files (.pdf, .docx, .txt) found in this Drive folder.")
+                    except Exception as err:
+                        st.error(f"Failed to import from Google Drive: {str(err)}")
+
+    # 3. MERGE LOCAL AND DRIVE FILE BYTES
     file_bytes_dict = {}
+
+
+    file_bytes_dict = {}
+
     if uploaded_files:
         for f in uploaded_files:
             file_bytes_dict[f.name] = f.read()
             f.seek(0)
+
+
+    if st.session_state.drive_files_dict:
+        file_bytes_dict.update(st.session_state.drive_files_dict)
+
+    # 4. PIPELINE STOP CHECK
+    if len(file_bytes_dict) < 2:
+        if st.session_state.analysis_results is None:
+            st.markdown(
+                empty_state_html(
+                    "Waiting for Files",
+                    "Please upload or import from Drive at least 2 PDF, DOCX, or TXT assignments to begin.",
+                    "📂",
+                ),
+                unsafe_allow_html=True,
+            )
+            st.stop()
+
+    # ── Metadata Editor Section ──────────────────────────────────────────────────
+    st.markdown("### 📝 Set Document Metadata")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        batch_class = st.text_input(
+            "Default Class/Section",
+            value="Class A",
+            help="Default class section for all files in this batch.",
+        )
+    with col2:
+        batch_assignment = st.text_input(
+            "Default Assignment Title",
+            value="Assignment 1",
+            help="Default assignment title for all files in this batch.",
+        )
+
+    metadata_dict = {}
+    for filename in file_bytes_dict.keys():
+        base_name = os.path.splitext(filename)[0]
+        guessed_name = base_name.replace("_", " ").replace("-", " ").title()
+
+        with st.expander(f"📄 {filename}", expanded=False):
+            student_name = st.text_input(
+                f"Student Name for {filename}",
+                value=guessed_name,
+                key=f"student_{filename}",
+            )
+            class_section = st.text_input(
+                f"Class/Section for {filename}", value=batch_class, key=f"class_{filename}"
+            )
+            assignment_title = st.text_input(
+                f"Assignment Title for {filename}",
+                value=batch_assignment,
+                key=f"assignment_{filename}",
+            )
+
+            metadata_dict[filename] = {
+                "student_name": student_name.strip(),
+                "class_section": class_section.strip(),
+                "assignment_title": assignment_title.strip(),
+            }
+
+    # ── Pipeline Execution ────────────────────────────────────────────────────────
+    @st.cache_data(show_spinner=False)
+    def run_pipeline(
+        file_bytes_dict: dict[str, bytes],
+        ocr_language: str,
+        ocr_dpi: int,
+    ):
+        raw_texts = {}
+        for name, data in file_bytes_dict.items():
+            raw_texts[name] = extract_text(
+                _io.BytesIO(data),
+                name,
+                ocr_language=ocr_language,
+                ocr_dpi=ocr_dpi,
+            )
+
+        chunked_docs = chunk_documents(raw_texts)
+        translated_chunked_docs = {}
+
+        for doc_name, chunks in chunked_docs.items():
+            translated_chunked_docs[doc_name] = []
+            for chunk in chunks:
+                prepared = prepare_text_for_embedding(chunk)
+                translated_chunked_docs[doc_name].append(prepared["embedding_text"])
+
+        embeddings = embed_documents(translated_chunked_docs)
+        sim_df = document_similarity_matrix(embeddings)
+
+        names = list(embeddings.keys())
+        n = len(names)
+        chunk_mat = np.zeros((n, n))
+
+        for i, na in enumerate(names):
+            for j, nb in enumerate(names):
+                if i == j:
+                    chunk_mat[i, j] = 1.0
+                elif j > i:
+                    ea, eb = embeddings[na], embeddings[nb]
+                    score = float(np.max(cosine_similarity(ea, eb))) if ea.size and eb.size else 0.0
+                    chunk_mat[i, j] = score
+                    chunk_mat[j, i] = score
+
+        chunk_sim_df = pd.DataFrame(chunk_mat, index=names, columns=names)
+        faiss_index, registry = build_index(embeddings, chunked_docs)
+        ai_probabilities = detect_documents_ai_probability(chunked_docs)
+
+        return (
+            raw_texts,
+            chunked_docs,
+            embeddings,
+            sim_df,
+            chunk_sim_df,
+            faiss_index,
+            registry,
+            ai_probabilities,
+        )
+
+    with st.spinner("🧠 Processing files and building embeddings…"):
+        analysis_results = run_pipeline(file_bytes_dict, ocr_language, ocr_dpi)
+
+    (
+        raw_texts,
+        chunked_docs,
+        embeddings,
+        sim_df,
+        chunk_sim_df,
+        faiss_index,
+        registry,
+        ai_probabilities,
+    ) = analysis_results
+
+    active_sim_df = chunk_sim_df if use_chunk_matrix else sim_df
+    flags = flag_plagiarism(active_sim_df, threshold=threshold)
+
+    # ── Summary Metrics ───────────────────────────────────────────────────────────
 
     if not uploaded_files or len(uploaded_files) < 2:
         st.markdown(
@@ -577,6 +922,7 @@ else:
     flags = flag_plagiarism(active_sim_df, threshold=threshold)
 
     # ── Summary Metrics ───────────────────────────────────────────────────────
+
     st.subheader("📊 Analysis Summary")
     doc_names = list(raw_texts.keys())
     n_docs = len(doc_names)
@@ -602,10 +948,45 @@ else:
         ]
     )
 
+
+
     # ══ TAB 1: WARNINGS ═══════════════════════════════════════════════════════
+
     with tab_warnings:
         st.subheader("⚠️ Plagiarism Warnings")
         render_warning_controls(flags, threshold=threshold, ai_probabilities=ai_probabilities)
+
+
+    with tab_faiss:
+        st.subheader("⚡ FAISS Vector Search")
+        st.info(f"FAISS Index contains **{faiss_index.ntotal}** vectors.")
+
+    with tab_matrix:
+        st.subheader("📋 Similarity Matrix")
+        if active_sim_df is not None:
+            st.dataframe(active_sim_df.style.format("{:.4f}"), use_container_width=True)
+
+    with tab_heatmap:
+        st.subheader("🗺️ Similarity Heatmap")
+        if active_sim_df is not None:
+            heatmap_fig = plot_similarity_heatmap(
+                active_sim_df, title="Document Semantic Similarity", threshold=threshold, theme_colors=get_colors()
+            )
+            st.pyplot(heatmap_fig, use_container_width=True)
+
+    with tab_drill:
+        st.subheader("🔬 Pair Drill-Down")
+        if n_docs >= 2:
+            c1, c2 = st.columns(2)
+            with c1:
+                doc_a = st.selectbox("Document A", doc_names, index=0, key="da")
+            with c2:
+                doc_b = st.selectbox("Document B", [d for d in doc_names if d != doc_a], index=0, key="db")
+
+            score = float(active_sim_df.loc[doc_a, doc_b])
+            st.markdown(f"**Overall Similarity:** `{score:.1%}`")
+            st.progress(float(score))
+
 
     # ══ TAB 2: FAISS ══════════════════════════════════════════════════════════
     with tab_faiss:
