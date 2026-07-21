@@ -6,11 +6,9 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 # ruff: noqa: E402
 
-import hashlib
 import os
 import io as _io
 import time
-from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -22,13 +20,10 @@ if _ROOT not in sys.path:
 
 from app.theme import (
     empty_state_html,
-    format_similarity_html,
     get_colors,
     get_theme_name,
     inject_css,
-    pipeline_progress_html,
     set_theme,
-    sidebar_user_badge_html,
 )
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Any
@@ -43,49 +38,37 @@ from src.core.similarity import (
 )
 from src.core.faiss_index import (
     build_index,
-    find_plagiarised_chunks,
     search_similar_chunks,
     save_index,
     load_or_rebuild_index,
     build_index_from_matrix,
+    load_index,
 )
-from src.core.webhook import send_plagiarism_alert
 from src.core.ai_detector import detect_documents_ai_probability
-from src.visualization.network_graph import plot_similarity_network
 from src.db import (
     init_corpus_db,
     get_all_documents,
     delete_document,
+    clear_all_data,
     get_all_embeddings,
     get_chunk_registry,
-    add_document,
-    get_document_by_hash,
-    add_chunks,
     get_unique_class_sections,
     get_documents_by_class,
 )
-from src.utils.pdf_report import generate_plagiarism_report, highlight_pdf_matches
-from src.utils.badge_generator import (
-    generate_badge_png,
-    generate_badge_pdf,
-)
+from src.utils.pdf_report import highlight_pdf_matches
 from src.utils.redis_cache import (
     cache_session_state,
     get_session_state,
     clear_session,
-    cache_faiss_index,
     get_faiss_index,
-    cache_analysis_results,
     get_analysis_results,
 )
 from src.visualization.heatmap import (
-    plot_chunk_similarity_comparison,
     plot_similarity_heatmap,
 )
 from src.core.document_parser import (
     DEFAULT_OCR_DPI,
     DEFAULT_OCR_LANGUAGE,
-    OCRDependencyError,
     SUPPORTED_OCR_LANGUAGES,
     extract_text,
     prepare_text_for_embedding,
@@ -94,10 +77,7 @@ from src.db.auth import (
     init_db,
     verify_user,
     get_user_role,
-    add_user,
     get_all_users,
-    delete_user,
-    update_password,
     get_tour_completed,
     set_tour_completed,
 )
@@ -220,6 +200,51 @@ if not st.session_state.get("authenticated", False):
 user_role = st.session_state.get("role", "user")
 
 
+@st.dialog("⚠️ Confirm Bulk Clear")
+def clear_all_dialog():
+    st.markdown(
+        "**WARNING:** This action is destructive and cannot be undone. "
+        "This will permanently delete all student documents, paragraph chunks, "
+        "and plagiarism incidents from the database, and reset the FAISS index."
+    )
+    st.write("Are you absolutely sure you want to proceed?")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Cancel", use_container_width=True, key="cancel_clear_all"):
+            st.rerun()
+    with col2:
+        if st.button("Clear All", type="primary", use_container_width=True, key="confirm_clear_all"):
+            # 1. Clear database tables (documents, chunks, incidents)
+            clear_all_data()
+
+            # 2. Clear/reset FAISS index file on disk
+            if os.path.exists(_INDEX_PATH):
+                try:
+                    os.remove(_INDEX_PATH)
+                except Exception as e:
+                    print(f"Error removing FAISS index: {e}")
+
+            # 3. Invalidate Redis cache
+            try:
+                from src.utils.redis_cache import get_cache
+                cache = get_cache()
+                if cache.is_available():
+                    cache.delete("faiss:index:corpus_index")
+                    cache.clear_pattern("analysis:*")
+            except Exception as e:
+                print(f"Error invalidating cache: {e}")
+
+            # 4. Invalidate Session State cache
+            if "analysis_results" in st.session_state:
+                st.session_state.analysis_results = None
+            if "analysis_file_signature" in st.session_state:
+                st.session_state.analysis_file_signature = None
+
+            st.success("All documents, chunks, and incidents have been cleared.")
+            st.rerun()
+
+
 # ── Top-right Theme Toggle ───────────────────────────────────────────────────
 current_theme = get_theme_name()
 
@@ -264,14 +289,7 @@ with st.sidebar:
             0.99,
             value=PLAGIARISM_THRESHOLD,
             step=0.01,
-
-
-            help="Cosine similarity above which a pair is flagged.",
-
-          
-
             help="Cosine similarity threshold for flagging.",
-
             key="threshold_slider",
         )
         use_chunk_matrix = st.checkbox(
@@ -335,6 +353,33 @@ with st.sidebar:
                 step=25,
                 key="ocr_dpi_slider",
             )
+
+        # ── Document Management & Bulk Clear ──
+        st.markdown("---")
+        st.markdown("### 📁 Document Management")
+        existing_docs = get_all_documents()
+        if existing_docs:
+            st.write(f"**{len(existing_docs)}** documents in database")
+            for doc in existing_docs:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"📄 {doc['filename']}")
+                with col2:
+                    if st.button("🗑️", key=f"del_{doc['filename']}"):
+                        delete_document(doc["filename"])
+                        embeddings_matrix = get_all_embeddings()
+                        if embeddings_matrix.size > 0:
+                            new_index = build_index_from_matrix(embeddings_matrix)
+                            save_index(new_index, _INDEX_PATH)
+                        else:
+                            if os.path.exists(_INDEX_PATH):
+                                os.remove(_INDEX_PATH)
+                        st.rerun()
+
+        st.markdown('<div class="clear-all-container">', unsafe_allow_html=True)
+        if st.button("🗑️ Clear All Documents", key="clear_all_documents_button", use_container_width=True):
+            clear_all_dialog()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     else:
         threshold = PLAGIARISM_THRESHOLD
@@ -454,6 +499,7 @@ flags = flag_plagiarism(active_sim_df, threshold=threshold)
 st.subheader("📊 Analysis Summary")
 st.write(f"Processed **{len(raw_texts)}** documents with Chunk Size: `{chunk_size}` and Overlap: `{chunk_overlap}`.")
 
+with st.sidebar:
     selected_class = st.selectbox(
         "Select Class/Section",
         unique_classes,
@@ -475,27 +521,7 @@ st.write(f"Processed **{len(raw_texts)}** documents with Chunk Size: `{chunk_siz
     st.markdown("---")
     st.caption("Semantic Plagiarism Detector · FAISS edition")
 
-    if user_role == "admin":
-        st.markdown("---")
-        st.markdown("### 📁 Document Management")
-        existing_docs = get_all_documents()
-        if existing_docs:
-            st.write(f"**{len(existing_docs)}** documents in database")
-            for doc in existing_docs:
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.text(f"📄 {doc['filename']}")
-                with col2:
-                    if st.button("🗑️", key=f"del_{doc['filename']}"):
-                        delete_document(doc["filename"])
-                        embeddings_matrix = get_all_embeddings()
-                        if embeddings_matrix.size > 0:
-                            new_index = build_index_from_matrix(embeddings_matrix)
-                            save_index(new_index, _INDEX_PATH)
-                        else:
-                            if os.path.exists(_INDEX_PATH):
-                                os.remove(_INDEX_PATH)
-                        st.rerun()
+
 
 
 
@@ -640,19 +666,6 @@ else:
             index_buffer = _io.BytesIO(cached_index_data)
             faiss_index = faiss.deserialize_index(faiss.read_index(index_buffer))
             registry = get_chunk_registry()
-
-        except Exception:
-
-            if os.path.exists(_INDEX_PATH):
-                faiss_index = load_index(_INDEX_PATH)
-                registry = get_chunk_registry()
-            else:
-                faiss_index = None
-                registry = []
-
-    if "analysis_results" not in st.session_state:
-        st.session_state.analysis_results = None
-
             st.info(f"📂 Loaded FAISS index from Redis cache with {faiss_index.ntotal} vectors")
         except Exception as e:
             print(f"[Redis] Error loading cached index: {e}, falling back to disk")
@@ -662,13 +675,17 @@ else:
 
             if index_recovered:
                 if faiss_index.ntotal:
-                    st.warning("FAISS index was missing, corrupted, or inconsistent and was "f"automatically rebuilt from {faiss_index.ntotal} stored vectors.")
+                    st.warning(f"FAISS index was missing, corrupted, or inconsistent and was automatically rebuilt from {faiss_index.ntotal} stored vectors.")
                 else:
                     st.info(
-                    "No stored embeddings were found. An empty FAISS index was "
-                    "initialized safely.")
+                        "No stored embeddings were found. An empty FAISS index was "
+                        "initialized safely."
+                    )
             else:
-                st.info(f"Loaded and validated the existing FAISS index with "f"{faiss_index.ntotal} vectors.")
+                st.info(f"Loaded and validated the existing FAISS index with {faiss_index.ntotal} vectors.")
+    else:
+        faiss_index = load_index(_INDEX_PATH) if os.path.exists(_INDEX_PATH) else None
+        registry = get_chunk_registry()
 
     if "analysis_results" not in st.session_state:
         st.session_state.analysis_results = None
@@ -1119,7 +1136,7 @@ else:
                     except Exception as err:
                         st.error(f"Unable to render PDF preview: {str(err)}")
             else:
-                st.info(f"PDF Preview is only available for uploaded `.pdf` files.")
+                st.info("PDF Preview is only available for uploaded `.pdf` files.")
 
     # ══ TAB 6: USERS ══════════════════════════════════════════════════════════
     with tab_users:
