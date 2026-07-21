@@ -682,6 +682,14 @@ else:
         key="file_uploader",
     )
 
+    st.markdown("### 🔗 Or Paste URL")
+    url_input = st.text_input(
+        "Paste a direct URL (e.g., Wikipedia article, Medium blog post)",
+        placeholder="https://example.com/article",
+        key="url_input",
+        help="The system will fetch and extract text from the webpage for plagiarism detection."
+    )
+
     file_bytes_dict = {
         uploaded_file.name: uploaded_file.getvalue() for uploaded_file in uploaded_files
     }
@@ -691,9 +699,35 @@ else:
             f.seek(0)
 
     # Allow analysis with existing index even without new uploads
-    if not uploaded_files or len(uploaded_files) < 2:
+    # Also allow URL input as an alternative to file uploads
+    url_text = None
+    url_filename = None
+    
+    if url_input and url_input.strip():
+        try:
+            from src.core.document_parser import extract_text_from_url
+            with st.spinner("🔍 Fetching and extracting text from URL..."):
+                url_text = extract_text_from_url(url_input.strip())
+                if not url_text or len(url_text.strip()) < 50:
+                    st.warning("⚠️ The URL did not contain enough text content for analysis.")
+                    url_text = None
+                else:
+                    # Generate a filename from the URL
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url_input.strip())
+                    url_filename = f"webpage_{parsed.netloc.replace('.', '_')}.txt"
+                    st.success(f"✅ Successfully extracted {len(url_text)} characters from the webpage.")
+        except Exception as e:
+            st.error(f"❌ Failed to fetch URL: {str(e)}")
+            url_text = None
+    
+    # Check if we have enough content (either files or URL)
+    has_files = uploaded_files and len(uploaded_files) >= 2
+    has_url = url_text is not None
+    
+    if not has_files and not has_url:
         if st.session_state.analysis_results is None:
-            st.info("👆 Please upload **at least 2** PDF assignment files to begin.")
+            st.info("👆 Please upload **at least 2** PDF assignment files or paste a URL to begin.")
             st.stop()
         else:
             st.success(
@@ -713,9 +747,9 @@ else:
             # For now, require uploads for full functionality
             st.stop()
 
-    if len(uploaded_files) < 2:
+    if not has_files and not has_url:
         st.info(
-            "👆 Please upload **at least 2** PDF, DOCX, or TXT assignment files to begin."
+            "👆 Please upload **at least 2** PDF, DOCX, or TXT assignment files or paste a URL to begin."
         )
         st.stop()
 
@@ -758,6 +792,29 @@ else:
             )
 
             metadata_dict[f.name] = {
+                "student_name": student_name.strip(),
+                "class_section": class_section.strip(),
+                "assignment_title": assignment_title.strip(),
+            }
+    
+    # Add metadata for URL input if provided
+    if url_filename:
+        with st.expander(f"🔗 {url_filename}", expanded=True):
+            student_name = st.text_input(
+                f"Student Name for {url_filename}",
+                value="Web Source",
+                key=f"student_{url_filename}",
+            )
+            class_section = st.text_input(
+                f"Class/Section for {url_filename}", value=batch_class, key=f"class_{url_filename}"
+            )
+            assignment_title = st.text_input(
+                f"Assignment Title for {url_filename}",
+                value=batch_assignment,
+                key=f"assignment_{url_filename}",
+            )
+
+            metadata_dict[url_filename] = {
                 "student_name": student_name.strip(),
                 "class_section": class_section.strip(),
                 "assignment_title": assignment_title.strip(),
@@ -841,6 +898,8 @@ else:
         ocr_dpi: int,
         existing_index=None,
         existing_registry=None,
+        url_text: str = None,
+        url_filename: str = None,
     ):
         """Extract, chunk, embed and index uploaded assignment files."""
         raw_texts = {}
@@ -859,6 +918,10 @@ else:
             except OCRDependencyError as exc:
                 failed_files.append(name)
                 failure_details.append(f"{name}: {exc}")
+
+        # Add URL text if provided
+        if url_text and url_filename:
+            raw_texts[url_filename] = url_text
 
         if failed_files:
             raise OCRFileBatchError(failed_files, failure_details)
@@ -981,6 +1044,8 @@ else:
                     pipeline_files,
                     ocr_language,
                     ocr_dpi,
+                    url_text=url_text,
+                    url_filename=url_filename,
                 )
 
         except OCRDependencyError as exc:
