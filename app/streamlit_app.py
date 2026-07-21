@@ -15,9 +15,16 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from app.theme import (
+    badge_html,
+    empty_state_html,
+    format_similarity_html,
+    get_colors,
     get_theme_name,
     inject_css,
+    pipeline_progress_html,
     set_theme,
+    severity_tier,
+    sidebar_user_badge_html,
 )
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import Any
@@ -148,10 +155,6 @@ else:
 
 if last_interaction and st.session_state.get("authenticated", False):
     elapsed_time = time.time() - last_interaction
-if "last_interaction" in st.session_state and st.session_state.get(
-    "authenticated", False
-):
-    elapsed_time = time.time() - st.session_state.last_interaction
     if elapsed_time > TIMEOUT_LIMIT:
         # Clear sensitive session variables on timeout
         for key in ["authenticated", "username", "role", "last_interaction"]:
@@ -159,7 +162,6 @@ if "last_interaction" in st.session_state and st.session_state.get(
                 del st.session_state[key]
         # Clear Redis session data
         clear_session(SESSION_ID)
-        st.warning("⏱️ Your session has expired due to 15 minutes of inactivity. Please log in again.")
         st.warning(
             "⏱️ Your session has expired due to 15 minutes of inactivity. Please log in again."
         )
@@ -171,8 +173,16 @@ if "last_interaction" in st.session_state and st.session_state.get(
 
 # 2. Render Login UI if not authenticated
 if not st.session_state.get("authenticated", False):
-    st.title("🔒 Plagiarism Detection Portal Login")
-    st.markdown("Please log in with your credentials to access the system.")
+    st.markdown(
+        '<div class="login-container">'
+        '<div class="login-header">'
+        '<div class="login-icon">🔍</div>'
+        '<div class="login-title">Plagiarism Detection Portal</div>'
+        '<div class="login-subtitle">Sign in to access the system</div>'
+        '</div>'
+        '<div class="login-accent-bar"></div>',
+        unsafe_allow_html=True,
+    )
 
     with st.form("login_form"):
         username = st.text_input("Username")
@@ -180,19 +190,6 @@ if not st.session_state.get("authenticated", False):
         login_submitted = st.form_submit_button("Log In", use_container_width=True)
 
         if login_submitted:
-            if verify_user(username, password):
-                role = get_user_role(username)
-                st.session_state.authenticated = True
-                st.session_state.role = role
-                st.session_state.username = username
-                st.session_state.last_interaction = time.time()
-                # Cache session state in Redis
-                cache_session_state(SESSION_ID, "authenticated", True)
-                cache_session_state(SESSION_ID, "role", role)
-                cache_session_state(SESSION_ID, "username", username)
-                cache_session_state(SESSION_ID, "last_interaction", time.time())
-                st.success(f"Welcome back, {role.capitalize()}!")
-                st.rerun()
             username = username.strip().lower()
 
             if not username or not password:
@@ -219,6 +216,8 @@ if not st.session_state.get("authenticated", False):
 
             else:
                 st.error("Invalid username or password.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
 # Get secure role for this active interaction
@@ -227,9 +226,16 @@ user_role = st.session_state.get("role", "user")
 # ── Sidebar (ROLE RESTRICTED Settings) ────────────────────────────────────────
 with st.sidebar:
     st.markdown(
-        "<div style='font-size: 72px; line-height: 1;'>🕵️‍♂️</div>", unsafe_allow_html=True
+        '<div class="sidebar-brand-title">🔍 Plagiarism Detector</div>'
+        '<div class="sidebar-brand-kicker">Semantic Analysis Engine</div>',
+        unsafe_allow_html=True,
     )
-    st.title("⚙️ Settings")
+    st.markdown(
+        sidebar_user_badge_html(
+            st.session_state.get("username", "user"), user_role
+        ),
+        unsafe_allow_html=True,
+    )
 
     current_theme = get_theme_name()
 
@@ -243,7 +249,6 @@ with st.sidebar:
     if selected_theme != current_theme:
         set_theme(selected_theme)
         st.rerun()
-    st.write(f"Logged in as: **{user_role.upper()}**")
 
     # Only show administrative settings to ADMIN users
     if user_role == "admin":
@@ -367,8 +372,15 @@ with st.sidebar:
                                 os.remove(_INDEX_PATH)
                         st.rerun()
         else:
-            st.info("No documents in database")
-        st.markdown("---")
+            st.markdown(
+                empty_state_html(
+                    "No documents in database",
+                    "Upload assignments to start detecting plagiarism.",
+                    "📁",
+                ),
+                unsafe_allow_html=True,
+            )
+        st.divider()
 
     # Log out button
     if st.button("🚪 Log Out", use_container_width=True, key="logout_button"):
@@ -601,9 +613,7 @@ if user_role != "admin":
 
                                 st.markdown(
                                     f"<div style='text-align:right;'>"
-                                    f"<span style='background:{color};color:white;padding:3px 12px;"
-                                    f"border-radius:10px;font-size:0.85rem;font-weight:700;'>"
-                                    f"Similarity: {score * 100:.1f}%</span></div>",
+                                    f"{format_similarity_html(score, threshold)}</div>",
                                     unsafe_allow_html=True,
                                 )
 
@@ -658,10 +668,10 @@ else:
     
 
     uploaded_files = st.file_uploader(
-        "📂 Upload Assignment PDFs",
-        type=["pdf"],
+        "📂 Upload Assignments",
+        type=["pdf", "docx", "txt"],
         accept_multiple_files=True,
-        help="Upload 2 or more PDF files.",
+        help="Upload 2 or more PDF, DOCX, or TXT files.",
         key="file_uploader",
     )
 
@@ -676,7 +686,14 @@ else:
     # Allow analysis with existing index even without new uploads
     if not uploaded_files or len(uploaded_files) < 2:
         if st.session_state.analysis_results is None:
-            st.info("👆 Please upload **at least 2** PDF assignment files to begin.")
+            st.markdown(
+                empty_state_html(
+                    "Waiting for Files",
+                    "Please upload at least 2 PDF, DOCX, or TXT assignments to begin the analysis.",
+                    "📂",
+                ),
+                unsafe_allow_html=True,
+            )
             st.stop()
         else:
             st.success(
@@ -951,7 +968,13 @@ else:
             ai_probabilities,
         ) = st.session_state.analysis_results
     else:
-        st.info(f"📤 Processing {len(new_files)} new files...")
+        st.markdown(
+            pipeline_progress_html(
+                "Processing Pipeline",
+                f"Extracting text, analyzing semantics, and building vector index for {len(new_files)} new files...",
+            ),
+            unsafe_allow_html=True,
+        )
 
         pipeline_files = {
             name: file_info["data"] for name, file_info in new_files.items()
@@ -1133,14 +1156,6 @@ else:
 
     # ── Summary metrics ───────────────────────────────────────────────────────────
     st.subheader("📊 Analysis Summary")
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    doc_names    = list(raw_texts.keys())
-    n_docs       = len(doc_names)
-    total_pairs  = n_docs * (n_docs - 1) // 2 if n_docs > 1 else 0
-    n_flagged    = len(flags)
-    n_high       = sum(1 for f in flags if "High" in f["severity"])
-    avg_sim      = active_sim_df.values[np.triu_indices(n_docs, k=1)].mean() if active_sim_df is not None and n_docs > 1 else 0.0
-    col1, col2, col3, col4, col5 = st.columns(5)
     doc_names = list(raw_texts.keys())
     n_docs = len(doc_names)
     total_pairs = n_docs * (n_docs - 1) // 2 if n_docs > 1 else 0
@@ -1152,13 +1167,14 @@ else:
         else 0.0
     )
     total_chunks = sum(len(v) for v in chunked_docs.values())
-    
+
     # Calculate average AI probability across all documents
     avg_ai_prob = 0.0
     if ai_probabilities:
         ai_scores = [ai_probabilities.get(doc, {}).get('overall', 0.0) for doc in doc_names]
         avg_ai_prob = np.mean(ai_scores) if ai_scores else 0.0
 
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("📄 Documents", n_docs)
     col2.metric("🔗 Pairs", total_pairs)
     col3.metric(
@@ -1256,7 +1272,6 @@ else:
 
                 st.subheader("🔑 Matching Paragraph Pairs")
                 for i, match in enumerate(faiss_matches[:20]):
-                    color = "#ff4b4b" if match["similarity"] >= 0.90 else "#ffa500"
                     with st.expander(
                         f"#{i + 1} · {match['source_doc']}  ↔  {match['match_doc']} "
                         f"— {match['similarity'] * 100:.1f}%",
@@ -1271,9 +1286,7 @@ else:
                             st.warning(match["match_chunk_text"])
                         st.markdown(
                             f"<div style='text-align:right;'>"
-                            f"<span style='background:{color};color:white;padding:3px 12px;"
-                            f"border-radius:10px;font-size:0.85rem;font-weight:700;'>"
-                            f"Similarity: {match['similarity'] * 100:.1f}%</span></div>",
+                            f"{format_similarity_html(match['similarity'], threshold)}</div>",
                             unsafe_allow_html=True,
                         )
                 if len(faiss_matches) > 20:
@@ -1334,8 +1347,13 @@ else:
     with tab_matrix:
         st.subheader("📋 Similarity Matrix")
         if active_sim_df is None:
-            st.info(
-                "No similarity matrix available. Please ensure at least 2 documents are uploaded for the selected class."
+            st.markdown(
+                empty_state_html(
+                    "No Similarity Matrix",
+                    "Ensure at least 2 documents are uploaded to compute similarities.",
+                    "📋",
+                ),
+                unsafe_allow_html=True,
             )
         else:
 
@@ -1360,14 +1378,20 @@ else:
     with tab_heatmap:
         st.subheader("🗺️ Similarity Heatmap")
         if active_sim_df is None:
-            st.info(
-                "No similarity heatmap or network available. Please ensure at least 2 documents are uploaded for the selected class."
+            st.markdown(
+                empty_state_html(
+                    "No Visualizations Available",
+                    "Ensure at least 2 documents are uploaded to generate heatmaps and networks.",
+                    "🗺️",
+                ),
+                unsafe_allow_html=True,
             )
         else:
             heatmap_fig = plot_similarity_heatmap(
                 active_sim_df,
                 title="Document Semantic Similarity",
                 threshold=threshold,
+                theme_colors=get_colors(),
             )
 
             st.pyplot(
@@ -1403,6 +1427,7 @@ else:
                 similarity_df=active_sim_df,
                 threshold=threshold,
                 title="Interactive Document Plagiarism Network",
+                theme_colors=get_colors(),
             )
 
             st.plotly_chart(
@@ -1433,10 +1458,11 @@ else:
                 )
 
             score = float(active_sim_df.loc[doc_a, doc_b])
+            _colors = get_colors()
             score_color = (
-                "#ff4b4b"
+                _colors["danger"]
                 if score >= 0.9
-                else ("#ffa500" if score >= threshold else "#21c55d")
+                else (_colors["warning"] if score >= threshold else _colors["success"])
             )
             st.markdown(
                 f"**Overall Similarity:** "
@@ -1464,6 +1490,7 @@ else:
                     chunks_a[:max_d],
                     chunks_b[:max_d],
                     cosine_similarity(emb_a, emb_b)[:max_d, :max_d],
+                    theme_colors=get_colors(),
                 )
                 st.pyplot(fig2, use_container_width=True)
 

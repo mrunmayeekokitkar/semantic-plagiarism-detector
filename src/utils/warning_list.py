@@ -9,6 +9,8 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 import streamlit as st
 
+from app.theme import badge_html, tier_from_severity_label
+
 
 SORT_FIELDS = {
     "Similarity": "similarity",
@@ -155,15 +157,6 @@ def _reset_page() -> None:
     st.session_state.warning_page = 1
 
 
-def _severity_badge(severity: str) -> tuple[str, str]:
-    value = severity.lower()
-    if "high" in value:
-        return "#ff4b4b", severity or "High"
-    if "medium" in value:
-        return "#ffa500", severity or "Medium"
-    return "#6c757d", severity or "Low"
-
-
 def render_warning_controls(
     flags: Sequence[Mapping[str, Any]],
     *,
@@ -272,7 +265,7 @@ def render_warning_controls(
         )
 
     for flag in current_page.items:
-        color, severity_text = _severity_badge(flag["severity"])
+        tier = tier_from_severity_label(flag["severity"])
         with st.container(border=True):
             c1, c2 = st.columns([3, 1])
             with c1:
@@ -293,12 +286,7 @@ def render_warning_controls(
                         )
             with c2:
                 st.markdown(
-                    (
-                        "<div style='text-align:center;padding:8px;"
-                        f"border-radius:8px;background:{color};color:white;"
-                        "font-weight:bold;'>"
-                        f"{severity_text}</div>"
-                    ),
+                    f"<div style='text-align:right;'>{badge_html(tier, flag['severity'])}</div>",
                     unsafe_allow_html=True,
                 )
 
