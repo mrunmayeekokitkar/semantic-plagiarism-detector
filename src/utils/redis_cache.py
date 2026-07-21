@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+RedisError = getattr(redis, "RedisError", Exception)
+
 
 # Redis connection configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -98,7 +100,7 @@ class RedisCache:
             else:
                 self._client.set(key, serialized)
             return True
-        except (redis.RedisError, pickle.PickleError) as e:
+        except (RedisError, pickle.PickleError) as e:
             print(f"[RedisCache] Error setting key {key}: {e}")
             return False
     
@@ -112,7 +114,7 @@ class RedisCache:
             if data is None:
                 return None
             return pickle.loads(data)
-        except (redis.RedisError, pickle.PickleError) as e:
+        except (RedisError, pickle.PickleError) as e:
             print(f"[RedisCache] Error getting key {key}: {e}")
             return None
     
@@ -124,7 +126,7 @@ class RedisCache:
         try:
             self._client.delete(key)
             return True
-        except redis.RedisError as e:
+        except RedisError as e:
             print(f"[RedisCache] Error deleting key {key}: {e}")
             return False
     
@@ -140,7 +142,7 @@ class RedisCache:
             else:
                 self._client.set(key, serialized)
             return True
-        except (redis.RedisError, json.JSONDecodeError) as e:
+        except (RedisError, json.JSONDecodeError) as e:
             print(f"[RedisCache] Error setting JSON key {key}: {e}")
             return False
     
@@ -154,7 +156,7 @@ class RedisCache:
             if data is None:
                 return None
             return json.loads(data)
-        except (redis.RedisError, json.JSONDecodeError) as e:
+        except (RedisError, json.JSONDecodeError) as e:
             print(f"[RedisCache] Error getting JSON key {key}: {e}")
             return None
     
@@ -165,7 +167,7 @@ class RedisCache:
         
         try:
             return bool(self._client.exists(key))
-        except redis.RedisError as e:
+        except RedisError as e:
             print(f"[RedisCache] Error checking key {key}: {e}")
             return False
     
@@ -179,7 +181,7 @@ class RedisCache:
             if keys:
                 return self._client.delete(*keys)
             return 0
-        except redis.RedisError as e:
+        except RedisError as e:
             print(f"[RedisCache] Error clearing pattern {pattern}: {e}")
             return 0
 

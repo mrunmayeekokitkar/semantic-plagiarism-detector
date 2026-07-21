@@ -938,9 +938,18 @@ else:
         st.warning(
             "No new files to upload. All uploaded files are already in the database."
         )
-        if faiss_index is None:
+        if st.session_state.analysis_results is None:
             st.stop()
-        # Continue with the existing index for analysis.
+        (
+            raw_texts,
+            chunked_docs,
+            embeddings,
+            sim_df,
+            chunk_sim_df,
+            faiss_index,
+            registry,
+            ai_probabilities,
+        ) = st.session_state.analysis_results
     else:
         st.info(f"📤 Processing {len(new_files)} new files...")
 
