@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from app.theme import (
-    badge_html,
     empty_state_html,
     format_similarity_html,
     get_colors,
@@ -23,7 +22,6 @@ from app.theme import (
     inject_css,
     pipeline_progress_html,
     set_theme,
-    severity_tier,
     sidebar_user_badge_html,
 )
 from sklearn.metrics.pairwise import cosine_similarity
@@ -970,8 +968,8 @@ else:
     else:
         st.markdown(
             pipeline_progress_html(
-                "Processing Pipeline",
-                f"Extracting text, analyzing semantics, and building vector index for {len(new_files)} new files...",
+                ["Extract Text", "Analyze Semantics", "Build Vector Index"],
+                1,
             ),
             unsafe_allow_html=True,
         )
