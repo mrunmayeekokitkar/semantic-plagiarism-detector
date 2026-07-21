@@ -43,6 +43,7 @@ from src.core.similarity import (  # noqa: E402
 )
 from src.core.text_chunking import chunk_documents  # noqa: E402
 from src.core.webhook import send_plagiarism_alert  # noqa: E402
+from src.core.ai_detector import detect_documents_ai_probability  # noqa: E402
 from src.db import (  # noqa: E402
     add_chunks,
     add_document,
@@ -630,6 +631,9 @@ else:
             chunked_docs,
         )
 
+        # Detect AI-generated text probability for each document
+        ai_probabilities = detect_documents_ai_probability(chunked_docs)
+
         return (
             raw_texts,
             chunked_docs,
@@ -638,6 +642,7 @@ else:
             chunk_sim_df,
             faiss_index,
             registry,
+            ai_probabilities,
         )
 
 
@@ -687,6 +692,7 @@ else:
             chunk_sim_df,
             faiss_index,
             registry,
+            ai_probabilities,
         ) = analysis_results
 
         st.session_state.analysis_results = analysis_results
@@ -779,6 +785,7 @@ else:
             chunk_sim_df,
             faiss_index,
             registry,
+            ai_probabilities,
         ) = st.session_state.analysis_results
 
     # Optional explicit reset. Normal widget changes must never clear analysis.
@@ -856,7 +863,7 @@ else:
 
     # ── Summary metrics ───────────────────────────────────────────────────────────
     st.subheader("📊 Analysis Summary")
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     doc_names    = list(raw_texts.keys())
     n_docs       = len(doc_names)
     total_pairs  = n_docs * (n_docs - 1) // 2 if n_docs > 1 else 0
@@ -864,13 +871,20 @@ else:
     n_high       = sum(1 for f in flags if "High" in f["severity"])
     avg_sim      = active_sim_df.values[np.triu_indices(n_docs, k=1)].mean() if active_sim_df is not None and n_docs > 1 else 0.0
     total_chunks = sum(len(v) for v in chunked_docs.values())
+    
+    # Calculate average AI probability across all documents
+    avg_ai_prob = 0.0
+    if ai_probabilities:
+        ai_scores = [ai_probabilities.get(doc, {}).get('overall', 0.0) for doc in doc_names]
+        avg_ai_prob = np.mean(ai_scores) if ai_scores else 0.0
 
     col1.metric("📄 Documents",   n_docs)
     col2.metric("🔗 Pairs",       total_pairs)
     col3.metric("🚨 Flagged",     n_flagged,
                 delta=f"{n_high} High" if n_high else None, delta_color="inverse")
     col4.metric("📈 Avg Similarity", f"{avg_sim:.1%}")
-    col5.metric(
+    col5.metric("🤖 Avg AI Prob", f"{avg_ai_prob:.1%}")
+    col6.metric(
         "🗂️ FAISS Vectors",
         faiss_index.ntotal if faiss_index is not None else 0,
     )
@@ -893,7 +907,7 @@ else:
     # ══ TAB 1 ════════════════════════════════════════════════════════════════════
     with tab_warnings:
         st.subheader("⚠️ Plagiarism Warnings")
-        render_warning_controls(flags, threshold=threshold)
+        render_warning_controls(flags, threshold=threshold, ai_probabilities=ai_probabilities)
 
     # ══ TAB 2: FAISS ═════════════════════════════════════════════════════════════
     with tab_faiss:
