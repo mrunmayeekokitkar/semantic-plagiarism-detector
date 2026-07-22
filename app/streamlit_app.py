@@ -1053,6 +1053,17 @@ else:
         key="admin_file_uploader",
     )
 
+    st.markdown("### 🔗 Or Paste URL")
+    url_input = st.text_input(
+        "Paste a direct URL (e.g., Wikipedia article, Medium blog post)",
+        placeholder="https://example.com/article",
+        key="url_input",
+        help="The system will fetch and extract text from the webpage for plagiarism detection."
+    )
+
+    file_bytes_dict = {
+        uploaded_file.name: uploaded_file.getvalue() for uploaded_file in uploaded_files
+    }
     # 2. GOOGLE DRIVE IMPORT SECTION (#146)
     from src.utils.google_drive import bulk_download_drive_folder
 
@@ -1130,6 +1141,51 @@ else:
                 file_bytes_dict[f.name] = f.read()
             f.seek(0)
 
+    # Allow analysis with existing index even without new uploads
+    # Also allow URL input as an alternative to file uploads
+    url_text = None
+    url_filename = None
+    
+    if url_input and url_input.strip():
+        try:
+            from src.core.document_parser import extract_text_from_url
+            with st.spinner("🔍 Fetching and extracting text from URL..."):
+                url_text = extract_text_from_url(url_input.strip())
+                if not url_text or len(url_text.strip()) < 50:
+                    st.warning("⚠️ The URL did not contain enough text content for analysis.")
+                    url_text = None
+                else:
+                    # Generate a filename from the URL
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url_input.strip())
+                    url_filename = f"webpage_{parsed.netloc.replace('.', '_')}.txt"
+                    st.success(f"✅ Successfully extracted {len(url_text)} characters from the webpage.")
+        except Exception as e:
+            st.error(f"❌ Failed to fetch URL: {str(e)}")
+            url_text = None
+    
+    # Check if we have enough content (either files or URL)
+    has_files = uploaded_files and len(uploaded_files) >= 2
+    has_url = url_text is not None
+    
+    if not has_files and not has_url:
+        if st.session_state.analysis_results is None:
+            st.info("👆 Please upload **at least 2** PDF assignment files or paste a URL to begin.")
+            st.stop()
+        else:
+            st.success(
+                f"📂 Using existing index with {faiss_index.ntotal} vectors from {len(get_all_documents())} documents"
+            )
+            # Skip to analysis section with existing index
+            file_bytes_dict = {}
+            raw_texts = {}
+            chunked_docs = {}
+            embeddings = {}
+            sim_df = None
+            chunk_sim_df = None
+            # We'll need to handle this case differently for the analysis
+            st.warning(
+                "⚠️ Full similarity matrix requires re-uploading files. FAISS search is available with existing index."
     if st.session_state.drive_files_dict:
         file_bytes_dict.update(st.session_state.drive_files_dict)
 
@@ -1145,6 +1201,12 @@ else:
                 unsafe_allow_html=True,
             )
             st.stop()
+
+    if not has_files and not has_url:
+        st.info(
+            "👆 Please upload **at least 2** PDF, DOCX, or TXT assignment files or paste a URL to begin."
+        )
+        st.stop()
 
     # ── Metadata Editor Section ──────────────────────────────────────────────────
     st.markdown("### 📝 Set Document Metadata")
@@ -1190,6 +1252,29 @@ else:
                 "class_section": class_section.strip(),
                 "assignment_title": assignment_title.strip(),
             }
+    
+    # Add metadata for URL input if provided
+    if url_filename:
+        with st.expander(f"🔗 {url_filename}", expanded=True):
+            student_name = st.text_input(
+                f"Student Name for {url_filename}",
+                value="Web Source",
+                key=f"student_{url_filename}",
+            )
+            class_section = st.text_input(
+                f"Class/Section for {url_filename}", value=batch_class, key=f"class_{url_filename}"
+            )
+            assignment_title = st.text_input(
+                f"Assignment Title for {url_filename}",
+                value=batch_assignment,
+                key=f"assignment_{url_filename}",
+            )
+
+            metadata_dict[url_filename] = {
+                "student_name": student_name.strip(),
+                "class_section": class_section.strip(),
+                "assignment_title": assignment_title.strip(),
+            }
 
     # ── Pipeline Execution ────────────────────────────────────────────────────────
     @st.cache_data(show_spinner=False)
@@ -1197,9 +1282,30 @@ else:
         file_bytes_dict: dict[str, bytes],
         ocr_language: str,
         ocr_dpi: int,
+        existing_index=None,
+        existing_registry=None,
+        url_text: str = None,
+        url_filename: str = None,
     ):
         raw_texts = {}
         for name, data in file_bytes_dict.items():
+            try:
+                raw_texts[name] = extract_text(
+                    _io.BytesIO(data),
+                    name,
+                    ocr_language=ocr_language,
+                    ocr_dpi=ocr_dpi,
+                )
+            except OCRDependencyError as exc:
+                failed_files.append(name)
+                failure_details.append(f"{name}: {exc}")
+
+        # Add URL text if provided
+        if url_text and url_filename:
+            raw_texts[url_filename] = url_text
+
+        if failed_files:
+            raise OCRFileBatchError(failed_files, failure_details)
             raw_texts[name] = extract_text(
                 _io.BytesIO(data),
                 name,
@@ -1291,6 +1397,173 @@ else:
 
     for flag in flags:
         try:
+            with st.spinner(
+                "🧠 Processing new files, building embeddings and FAISS index…"
+            ):
+                (
+                    raw_texts_new,
+                    chunked_docs_new,
+                    embeddings_new,
+                    sim_df_new,
+                    chunk_sim_df_new,
+                    faiss_index_new,
+                    registry_new,
+                ) = run_pipeline(
+                    pipeline_files,
+                    ocr_language,
+                    ocr_dpi,
+                    url_text=url_text,
+                    url_filename=url_filename,
+                )
+
+        except OCRDependencyError as exc:
+            failed_files = getattr(
+                exc,
+                "failed_files",
+                list(pipeline_files.keys()),
+            )
+
+            show_ocr_dependency_error(
+                failed_files=failed_files,
+                error_message=str(exc),
+            )
+            st.stop()
+
+        (
+            raw_texts,
+            chunked_docs,
+            embeddings,
+            sim_df,
+            chunk_sim_df,
+            faiss_index,
+            registry,
+            ai_probabilities,
+        ) = analysis_results
+
+        st.session_state.analysis_results = analysis_results
+        st.session_state.analysis_file_signature = file_signature
+        # Cache analysis results in Redis
+        cache_analysis_results(f"{SESSION_ID}:current", analysis_results)
+        cache_session_state(SESSION_ID, "analysis_file_signature", file_signature)
+
+        # Persist only documents that are not already stored. Database duplicate
+        # detection must not decide whether dashboard data remains visible.
+        saved_documents = 0
+        skipped_documents = []
+
+        for uploaded_file in uploaded_files:
+            file_data = file_bytes_dict[uploaded_file.name]
+            file_hash = hashlib.sha256(file_data).hexdigest()
+            existing = get_document_by_hash(file_hash)
+
+            if existing:
+                skipped_documents.append(uploaded_file.name)
+                continue
+
+        # The complete pipeline succeeded, so the documents can now be stored.
+        for doc_name, file_info in new_files.items():
+            meta = metadata_dict.get(
+                doc_name,
+                {"student_name": "", "class_section": "", "assignment_title": ""},
+            )
+            add_document(
+                doc_name,
+                file_info["hash"],
+                class_section=meta["class_section"],
+                student_name=meta["student_name"],
+                assignment_title=meta["assignment_title"],
+            )
+
+        # If an index already exists, append the new vectors.
+        if faiss_index is not None:
+            save_index(faiss_index, _INDEX_PATH)
+            # Cache FAISS index in Redis
+            try:
+                import faiss
+                import io
+                index_buffer = io.BytesIO()
+                faiss.write_index(faiss_index, index_buffer)
+                index_buffer.seek(0)
+                cache_faiss_index(index_key, index_buffer.getvalue())
+            except Exception as e:
+                print(f"[Redis] Error caching FAISS index: {e}")
+            all_vectors = []
+            all_registry = registry.copy()
+
+            for doc_name, emb in embeddings_new.items():
+                chunks = chunked_docs_new.get(doc_name, [])
+                if emb.ndim != 2 or emb.shape[0] == 0:
+                    continue
+
+                for i, (vec, chunk_text) in enumerate(zip(emb, chunks)):
+                    all_vectors.append(vec.astype("float32"))
+                    all_registry.append(ChunkRecord(doc_name, i, chunk_text))
+
+            if all_vectors:
+                matrix = np.vstack(all_vectors)
+                faiss_index.add(matrix)  # type: ignore[arg-type]
+                registry = all_registry
+                st.success(f"✅ Added {len(all_vectors)} new vectors to existing index")
+            raw_texts = raw_texts_new
+            chunked_docs = chunked_docs_new
+            embeddings = embeddings_new
+            sim_df = sim_df_new
+            chunk_sim_df = chunk_sim_df_new
+        else:
+            # No existing index: use the newly generated data.
+            faiss_index = faiss_index_new
+            registry = registry_new
+
+        # Always set pipeline variables from the new results
+        raw_texts = raw_texts_new
+        chunked_docs = chunked_docs_new
+        embeddings = embeddings_new
+        sim_df = sim_df_new
+        chunk_sim_df = chunk_sim_df_new
+
+        # Save the updated FAISS index.
+        save_index(faiss_index, _INDEX_PATH)
+
+        # Store chunks in the database for persistence.
+        for doc_name, emb in embeddings_new.items():
+            chunks = chunked_docs_new.get(doc_name, [])
+            if emb.ndim != 2 or emb.shape[0] == 0:
+                continue
+            start_id = len(
+                [record for record in registry if record.doc_name != doc_name]
+            )
+            chunks_to_add = []
+            for i, (vec, chunk_text) in enumerate(zip(emb, chunks)):
+                chunks_to_add.append((start_id + i, doc_name, i, chunk_text, vec))
+            add_chunks(chunks_to_add)
+    # If we have an existing index but no new files, load existing data
+    if faiss_index is not None and not new_files:
+        # For now, we need to rebuild the full pipeline for similarity matrix
+        # This is a limitation - we'd need to store raw_texts in DB to avoid this
+        st.warning(
+            "⚠️ Similarity matrix requires re-uploading files. FAISS search is available with existing index."
+        )
+        # For full functionality, require uploads
+        if not new_files:
+            st.info(
+                "Please upload files to generate similarity matrix. FAISS search is available below."
+            )
+            # We'll allow FAISS search but skip the matrix
+            raw_texts = {}
+            chunked_docs = {}
+            embeddings = {}
+            sim_df = None
+            chunk_sim_df = None
+            active_sim_df = None
+            flags = []
+    else:
+        # Check for files from which no usable text could be extracted
+        empty_docs = [name for name, text in raw_texts.items() if not text.strip()]
+        if empty_docs:
+            st.warning(
+                f"⚠️ **Could not extract text from:** {', '.join(empty_docs)}. "
+                "The files may be empty, unsupported, scanned, corrupted, "
+                "or password-protected."
             send_plagiarism_alert(
                 doc_a=flag["doc_a"],
                 doc_b=flag["doc_b"],

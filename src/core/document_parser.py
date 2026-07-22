@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from pathlib import Path
 from typing import BinaryIO, Dict, List, Union
+from urllib.parse import urlparse
 
 import docx
 import pdfplumber
@@ -556,6 +557,62 @@ def extract_text_from_txt(file: PDFInput) -> str:
     return text.strip()
 
 
+def extract_text_from_url(url: str) -> str:
+    """Extract text content from a URL using web scraping.
+    
+    Args:
+        url: The URL to fetch and extract text from
+        
+    Returns:
+        Cleaned text content from the webpage
+        
+    Raises:
+        ValueError: If the URL is invalid
+        Exception: If fetching or parsing fails
+    """
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise ImportError(
+            "Web scraping dependencies are missing. Install beautifulsoup4 and "
+            "requests using: python -m pip install beautifulsoup4 requests"
+        ) from exc
+    
+    # Validate URL
+    parsed = urlparse(url)
+    if not all([parsed.scheme, parsed.netloc]) or parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid URL: {url}")
+    
+    try:
+        # Fetch the webpage with a user agent to avoid being blocked
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        # Parse HTML content
+        soup = BeautifulSoup(response.content, "html.parser")
+        
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            script.decompose()
+        
+        # Get text from main content areas
+        text = soup.get_text()
+        
+        # Clean up whitespace
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = "\n".join(chunk for chunk in chunks if chunk)
+        
+        return strip_bibliography(text)
+        
+    except requests.RequestException as exc:
+        raise Exception(f"Failed to fetch URL: {exc}") from exc
+    except Exception as exc:
+        raise Exception(f"Failed to parse webpage content: {exc}") from exc
 # --- Markdown (.md) support -------------------------------------------------
 #
 # Markdown files are plain text, so we reuse the TXT reading logic to get the
