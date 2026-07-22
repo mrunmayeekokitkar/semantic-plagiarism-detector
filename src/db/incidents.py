@@ -192,3 +192,60 @@ def export_current_flags_csv(
 ) -> bytes:
     sync_flagged_incidents(flags, db_path)
     return incidents_to_csv(get_all_incidents(db_path))
+
+
+def get_high_severity_trends(
+    days: int = 30,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """
+    Get daily count of High severity incidents over the specified number of days.
+    Returns list of dicts with 'date' and 'count' keys.
+    """
+    init_incident_db(db_path)
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT 
+                DATE(date_flagged) as date,
+                COUNT(*) as count
+            FROM plagiarism_incidents
+            WHERE severity_rank = 'High'
+                AND date_flagged >= datetime('now', '-' || ? || ' days')
+            GROUP BY DATE(date_flagged)
+            ORDER BY date ASC
+            """,
+            (days,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_most_plagiarized_documents(
+    limit: int = 10,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """
+    Get the most frequently plagiarized documents based on incident count.
+    Returns list of dicts with 'document_name' and 'incident_count' keys.
+    """
+    init_incident_db(db_path)
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT 
+                document_name,
+                COUNT(*) as incident_count
+            FROM (
+                SELECT document_a as document_name FROM plagiarism_incidents
+                UNION ALL
+                SELECT document_b as document_name FROM plagiarism_incidents
+            )
+            GROUP BY document_name
+            ORDER BY incident_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
