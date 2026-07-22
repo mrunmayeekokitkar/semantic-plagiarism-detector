@@ -85,6 +85,9 @@ from src.utils.redis_cache import (  # noqa: E402
     cache_analysis_results,
     get_analysis_results,
     get_cache,
+    is_upload_rate_limited,
+    increment_upload_count,
+    get_upload_count,
 )
 from src.visualization.heatmap import (  # noqa: E402
     plot_chunk_similarity_comparison,
@@ -133,6 +136,9 @@ from src.db.auth import (
     update_password,
     get_tour_completed,
     set_tour_completed,
+    check_login_rate_limit,
+    record_failed_login,
+    clear_login_attempts,
 )
 from streamlit_tour import Tour
 
@@ -205,45 +211,34 @@ if not st.session_state.get("authenticated", False):
         login_submitted = st.form_submit_button("Log In", use_container_width=True)
 
         if login_submitted:
-            if verify_user(username, password):
-                role = get_user_role(username)
-                st.session_state.authenticated = True
-                st.session_state.role = role
-                st.session_state.username = username
-                st.session_state.last_interaction = time.time()
-                # Cache session state in Redis
-                cache_session_state(SESSION_ID, "authenticated", True)
-                cache_session_state(SESSION_ID, "role", role)
-                cache_session_state(SESSION_ID, "username", username)
-                cache_session_state(SESSION_ID, "last_interaction", time.time())
-                st.success(f"Welcome back, {role.capitalize()}!")
-                st.rerun()
             username = username.strip().lower()
-
+            
             if not username or not password:
                 st.error("Please enter both username and password.")
-
-            elif verify_user(username, password):
-                role = get_user_role(username)
-
-                if role is None:
-                    st.error("Unable to determine the user role.")
-                else:
+            else:
+                # Check rate limit before attempting authentication
+                is_allowed, error_msg = check_login_rate_limit(username)
+                if not is_allowed:
+                    st.error(error_msg)
+                elif verify_user(username, password):
+                    role = get_user_role(username)
                     st.session_state.authenticated = True
-                    st.session_state.username = username
                     st.session_state.role = role
+                    st.session_state.username = username
                     st.session_state.last_interaction = time.time()
+                    # Clear failed login attempts on successful login
+                    clear_login_attempts(username)
                     # Cache session state in Redis
                     cache_session_state(SESSION_ID, "authenticated", True)
-                    cache_session_state(SESSION_ID, "username", username)
                     cache_session_state(SESSION_ID, "role", role)
+                    cache_session_state(SESSION_ID, "username", username)
                     cache_session_state(SESSION_ID, "last_interaction", time.time())
-
-                    st.success(f"Welcome back, {username}!")
+                    st.success(f"Welcome back, {role.capitalize()}!")
                     st.rerun()
-
-            else:
-                st.error("Invalid username or password.")
+                else:
+                    # Record failed login attempt
+                    record_failed_login(username)
+                    st.error("Invalid username or password.")
     st.stop()
 
 # Get secure role for this active interaction
@@ -689,6 +684,18 @@ else:
         help="Upload 2 or more PDF files.",
         key="file_uploader",
     )
+
+    # Check upload rate limit if files are uploaded
+    if uploaded_files:
+        username = st.session_state.get("username", "anonymous")
+        if is_upload_rate_limited(username):
+            current_count = get_upload_count(username)
+            st.error(f"Upload rate limit exceeded. Maximum 100 uploads per hour allowed. Current: {current_count}/100. Please try again later.")
+            uploaded_files = None
+        else:
+            # Increment upload counter for each file
+            for _ in uploaded_files:
+                increment_upload_count(username)
 
     st.markdown("### 🔗 Or Paste URL")
     url_input = st.text_input(
