@@ -69,6 +69,14 @@ from src.db import (
     get_unique_class_sections,
     init_corpus_db,
 )
+from src.db.incidents import (  # noqa: E402
+    get_high_severity_trends,
+    get_most_plagiarized_documents,
+)
+from src.utils.pdf_report import generate_plagiarism_report  # noqa: E402
+from src.utils.badge_generator import (  # noqa: E402
+    generate_badge_png,
+    generate_badge_pdf,
 from src.db.auth import (
     disable_2fa,
     enable_2fa,
@@ -85,6 +93,24 @@ from src.utils.redis_cache import (
     cache_session_state,
     clear_session,
     get_analysis_results,
+    get_cache,
+)
+from src.visualization.heatmap import (  # noqa: E402
+    plot_chunk_similarity_comparison,
+    plot_similarity_heatmap,
+)
+from src.visualization.analytics import (  # noqa: E402
+    plot_high_severity_trends,
+    plot_most_plagiarized_documents,
+)
+from src.core.document_parser import (
+    DEFAULT_OCR_DPI,
+    DEFAULT_OCR_LANGUAGE,
+    OCRDependencyError,
+    SUPPORTED_OCR_LANGUAGES,
+    extract_text,
+    normalize_ocr_settings,
+    prepare_text_for_embedding,
     get_faiss_index,
     get_session_state,
 )
@@ -1588,6 +1614,8 @@ else:
     col5.metric("🎯 Threshold", f"{threshold:.0%}")
     st.divider()
 
+    # ── Tabs ──────────────────────────────────────────────────────────────────────
+    tab_warnings, tab_faiss, tab_matrix, tab_heatmap, tab_drill, tab_analytics, tab_users = st.tabs(
     # ── Application Tabs ──────────────────────────────────────────────────────
     tab_warnings, tab_faiss, tab_matrix, tab_heatmap, tab_drill, tab_users = st.tabs(
         [
@@ -1596,6 +1624,7 @@ else:
             "📋 Similarity Matrix",
             "🗺️ Heatmap",
             "🔬 Pair Drill-Down",
+            "📊 Analytics",
             "👥 User Management",
         ]
     )
@@ -1850,6 +1879,50 @@ else:
             else:
                 st.info("PDF Preview is only available for uploaded `.pdf` files.")
 
+    # ══ TAB 6: Analytics ═════════════════════════════════════════════════════════
+    with tab_analytics:
+        st.subheader("📊 Plagiarism Analytics Dashboard")
+        st.caption(
+            "Track plagiarism trends and identify frequently plagiarized documents across all classes."
+        )
+        
+        # Sync current flags to incidents database before displaying analytics
+        if flags:
+            from src.db.incidents import sync_flagged_incidents
+            sync_flagged_incidents(flags)
+        
+        st.divider()
+        
+        # High Severity Trends Chart
+        st.subheader("📈 High Severity Plagiarism Trends (Last 30 Days)")
+        trend_data = get_high_severity_trends(days=30)
+        trend_fig = plot_high_severity_trends(trend_data)
+        st.plotly_chart(trend_fig, use_container_width=True)
+        
+        st.divider()
+        
+        # Most Plagiarized Documents Chart
+        st.subheader("🔝 Most Frequently Plagiarized Documents")
+        doc_data = get_most_plagiarized_documents(limit=10)
+        doc_fig = plot_most_plagiarized_documents(doc_data)
+        st.plotly_chart(doc_fig, use_container_width=True)
+        
+        st.divider()
+        
+        # Summary statistics
+        st.subheader("📋 Analytics Summary")
+        if trend_data:
+            total_high_severity = sum(item['count'] for item in trend_data)
+            st.metric("Total High Severity Incidents (30 days)", total_high_severity)
+        else:
+            st.info("No high severity incidents recorded in the last 30 days.")
+        
+        if doc_data:
+            st.metric("Most Plagiarized Document", f"{doc_data[0]['document_name']} ({doc_data[0]['incident_count']} incidents)")
+        else:
+            st.info("No plagiarism incidents recorded.")
+
+    # ══ TAB 7: User Management ═══════════════════════════════════════════════════
     # ══ TAB 6: USERS ══════════════════════════════════════════════════════════
     with tab_users:
         st.subheader("👥 User Management")
