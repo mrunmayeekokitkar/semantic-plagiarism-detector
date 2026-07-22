@@ -18,9 +18,8 @@ set_tour_completed(username, completed) → None
 
 import os
 import sqlite3
+
 import bcrypt
-import uuid
-import os
 
 _DB_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "users.db")
@@ -58,9 +57,7 @@ def _validate_password(password: str) -> str:
 def _validate_role(role: str) -> str:
     role = str(role).strip().lower()
     if role not in VALID_ROLES:
-        raise ValueError(
-            f"Role must be one of: {', '.join(sorted(VALID_ROLES))}"
-        )
+        raise ValueError(f"Role must be one of: {', '.join(sorted(VALID_ROLES))}")
     return role
 
 
